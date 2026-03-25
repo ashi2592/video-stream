@@ -5,7 +5,7 @@ import uuid
 import os
 
 from tasks import process_video_task
-from s3_utils import generate_presigned_url
+# from s3_utils import generate_presigned_url
 from mongo_model import create_video, get_video
 
 # ── APP INIT ───────────────────────────────────────────────
@@ -26,6 +26,7 @@ UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
 RTMP_BASE = os.getenv("RTMP_BASE", "rtmp://localhost/live")
 HLS_BASE  = os.getenv("HLS_BASE", "http://localhost/hls")
 
+
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 500 * 1024 * 1024))  # 500MB
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -45,6 +46,7 @@ async def upload_video(file: UploadFile = File(...)):
     # Secure filename
     safe_filename = os.path.basename(file.filename)
     local_path = f"{UPLOAD_DIR}/{video_id}_{safe_filename}"
+    OUTPUT_DIR = os.path.join(BASE_DIR, "outputs", video_id)
 
     # Save file with size protection
     size = 0
@@ -98,20 +100,20 @@ def get_video_status(video_id: str):
 
 @app.get("/video/{video_id}/urls")
 def get_video_urls(video_id: str):
-    formats = {
-        "hls":  f"{video_id}/hls/master.m3u8",
-        "mp4":  f"{video_id}/mp4/output.mp4",
-        "webm": f"{video_id}/webm/output.webm",
-    }
+    video = get_video(video_id)
 
-    try:
-        urls = {fmt: generate_presigned_url(key) for fmt, key in formats.items()}
-    except Exception as e:
-        raise HTTPException(500, f"URL generation failed: {str(e)}")
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    paths = video.get("paths", {})
 
     return {
         "video_id": video_id,
-        "urls": urls
+        "urls": {
+            "mp4": f"http://localhost:8000/{paths.get('mp4')}",
+            "hls": f"http://localhost:8000/{paths.get('hls')}",
+            "webm": f"http://localhost:8000/{paths.get('webm')}",
+        }
     }
 
 

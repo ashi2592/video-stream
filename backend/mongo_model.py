@@ -8,7 +8,7 @@ load_dotenv()
 
 # ── DB Connection ───────────────────────────────────────────────
 
-client = MongoClient(os.getenv("MONGODB_URI"))
+client = MongoClient("mongodb://root:password@localhost:27017/")
 db = client["video_platform"]
 
 videos_collection = db["videos"]
@@ -35,7 +35,6 @@ class VideoStatus:
 
 
 # ── VIDEO OPERATIONS ────────────────────────────────────────────
-
 def create_video(filename, title=None, size_bytes=None):
     video = {
         "id": str(uuid.uuid4()),
@@ -45,6 +44,11 @@ def create_video(filename, title=None, size_bytes=None):
         "task_id": None,
         "duration": None,
         "size_bytes": size_bytes,
+        "paths": {
+            "mp4": None,
+            "hls": None,
+            "webm": None
+        },
         "error_msg": None,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow()
@@ -142,4 +146,16 @@ def get_stream(stream_key):
     return livestreams_collection.find_one(
         {"stream_key": stream_key},
         {"_id": 0}
+    )
+
+
+def update_video_paths(video_id, paths: dict):
+    videos_collection.update_one(
+        {"id": video_id},
+        {
+            "$set": {
+                "paths": paths,
+                "updated_at": datetime.utcnow()
+            }
+        }
     )
