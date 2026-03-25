@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+
+  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  fastapi:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/tmp/uploads
+      - outputs:/tmp/outputs
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # ── Celery video-processing worker ─────────────────────────────────────────
+  celery_worker:
+    build: ./backend
+    command: celery -A tasks worker --concurrency=2 --loglevel=info -Q video
+    env_file: .env
+    volumes:
+      - uploads:/tmp/uploads
+      - outputs:/tmp/outputs
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Celery task monitor (optional) ─────────────────────────────────────────
+  flower:
+    build: ./backend
+    command: celery -A tasks flower --port=5555
+    env_file: .env
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Redis (Celery broker + result backend) ──────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # ── PostgreSQL (video metadata) ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       videoplatform
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # ── Nginx RTMP ingest + HTTP proxy ─────────────────────────────────────────
+  nginx:
+    image: tiangolo/nginx-rtmp
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - hls:/tmp/hls
+    ports:
+      - "80:80"       # HTTP
+      - "1935:1935"   # RTMP ingest
+    depends_on:
+      - fastapi
+    restart: unless-stopped
+
+  # ── React frontend (production build) ──────────────────────────────────────
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+
+volumes:
+  uploads:
+  outputs:
+  hls:
+  pgdata:

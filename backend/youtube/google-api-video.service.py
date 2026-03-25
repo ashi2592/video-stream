@@ -91,6 +91,32 @@ def upload_video(youtube, file_path):
     print("Uploaded Video ID:", response["id"])
 
 
+
+def create_broadcast(youtube):
+    now = datetime.datetime.utcnow().isoformat("T") + "Z"
+
+    request = youtube.liveBroadcasts().insert(
+        part="snippet,status,contentDetails",
+        body={
+            "snippet": {
+                "title": "My Live Broadcast",
+                "scheduledStartTime": now
+            },
+            "status": {
+                "privacyStatus": "public"
+            },
+            "contentDetails": {
+                "enableAutoStart": True,
+                "enableAutoStop": True
+            }
+        }
+    )
+
+    response = request.execute()
+    print("Broadcast ID:", response["id"])
+    return response["id"]
+
+    
 if __name__ == "__main__":
     youtube = get_authenticated_service()
 
