@@ -46,7 +46,6 @@ async def upload_video(file: UploadFile = File(...)):
     # Secure filename
     safe_filename = os.path.basename(file.filename)
     local_path = f"{UPLOAD_DIR}/{video_id}_{safe_filename}"
-    OUTPUT_DIR = os.path.join(BASE_DIR, "outputs", video_id)
 
     # Save file with size protection
     size = 0
