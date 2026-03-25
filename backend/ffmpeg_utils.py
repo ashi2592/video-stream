@@ -1,4 +1,4 @@
-from models_pymongo import update_video_status, VideoStatus
+from mongo_model import update_video_status, VideoStatus
 
 def process_video(video_id: str, input_path: str, output_dir: str) -> dict:
     try:

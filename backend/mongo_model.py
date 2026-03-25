@@ -17,11 +17,11 @@ livestreams_collection = db["live_streams"]
 
 # ── INDEXES (RUN ON STARTUP) ─────────────────────────────────────
 
-videos_collection.create_index("id", unique=True)
-videos_collection.create_index("status")
-videos_collection.create_index("created_at")
+# videos_collection.create_index("id", unique=True)
+# videos_collection.create_index("status")
+# videos_collection.create_index("created_at")
 
-livestreams_collection.create_index("stream_key", unique=True)
+# livestreams_collection.create_index("stream_key", unique=True)
 
 
 # ── ENUM ────────────────────────────────────────────────────────

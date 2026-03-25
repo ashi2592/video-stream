@@ -6,7 +6,7 @@ import os
 
 from tasks import process_video_task
 from s3_utils import generate_presigned_url
-from models_pymongo import create_video, get_video
+from mongo_model import create_video, get_video
 
 # ── APP INIT ───────────────────────────────────────────────
 
@@ -21,8 +21,8 @@ app.add_middleware(
 )
 
 # ── CONFIG ───────────────────────────────────────────────
-
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/data/uploads")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
 RTMP_BASE = os.getenv("RTMP_BASE", "rtmp://localhost/live")
 HLS_BASE  = os.getenv("HLS_BASE", "http://localhost/hls")
 
