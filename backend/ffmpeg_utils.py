@@ -1,96 +1,147 @@
+from news_overlay import NewsOverlayFilter, OverlayConfig
 import os
-from mongo_model import update_video_status, VideoStatus
+import argparse
+import subprocess
+import os
+import logging
 
-def process_video(video_id: str, input_path: str, output_dir: str) -> dict:
-    try:
-        update_video_status(video_id, VideoStatus.PROCESSING)
+logger = logging.getLogger(__name__)
 
-        # ── Directories ─────────────────────────────
-        hls_dir  = os.path.join(output_dir, "hls")
-        mp4_dir  = os.path.join(output_dir, "mp4")
-        webm_dir = os.path.join(output_dir, "webm")
+FFMPEG_IMAGE = os.getenv("FFMPEG_DOCKER_IMAGE", "jrottenberg/ffmpeg:latest")
 
-        os.makedirs(hls_dir, exist_ok=True)
-        os.makedirs(mp4_dir, exist_ok=True)
-        os.makedirs(webm_dir, exist_ok=True)
 
-        mp4_out  = os.path.join(mp4_dir, "output.mp4")
-        hls_out  = os.path.join(hls_dir, "master.m3u8")
-        webm_out = os.path.join(webm_dir, "output.webm")
+def _run(args: list[str], label: str, mount_dir: str):
+    """
+    Run FFmpeg inside Docker container.
 
-        short_id = video_id[:8]
+    Args:
+        args: FFmpeg arguments (without 'ffmpeg')
+        label: log label
+        mount_dir: host directory to mount inside container (/work)
+    """
 
-        # ── Filter ──────────────────────────────────
-        vf_filter = (
-            "scale=1280:720:force_original_aspect_ratio=decrease,"
-            "pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
-            f"drawtext=text='{short_id}':"
-            "fontsize=18:fontcolor=white@0.75:"
-            "x=20:y=20:"
-            "box=1:boxcolor=black@0.45:boxborderw=6"
+    # 🔹 Convert host paths → container paths
+    remapped_args = []
+    for arg in args:
+        if isinstance(arg, str) and os.path.isabs(arg) and arg.startswith(mount_dir):
+            container_path = "/work/" + os.path.relpath(arg, mount_dir)
+            remapped_args.append(container_path)
+        else:
+            remapped_args.append(arg)
+
+    # 🔹 Full docker command
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{mount_dir}:/work",
+        FFMPEG_IMAGE,
+        *remapped_args
+    ]
+
+    logger.info(f"[{label}] Running FFmpeg...")
+    logger.debug(" ".join(cmd))
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        logger.error(result.stderr)
+        raise RuntimeError(f"[{label}] FFmpeg failed:\n{result.stderr}")
+
+    logger.info(f"[{label}] Completed successfully")
+
+
+def process_video(video_id, input_path, output_dir, overlay=None):
+    overlay = overlay or {}
+    mount_dir = os.getcwd()
+
+    mp4_dir = os.path.join(output_dir, "mp4")
+    os.makedirs(mp4_dir, exist_ok=True)
+
+    mp4_out = os.path.join(mp4_dir, "output.mp4")
+
+    overlay_enabled = overlay.get("enabled", True)
+
+    if overlay_enabled:
+        # ✅ Build overlay config
+        cfg = OverlayConfig(
+            channel_name=overlay.get("channel_name", "NEWS 24"),
+            headline=overlay.get("headline", "BREAKING NEWS"),
+            ticker_text=overlay.get("ticker", "Stay tuned"),
+            badge_text=overlay.get("badge_text", "BREAKING"),
+            font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         )
 
-        # Convert paths → /work (Docker)
-        base_dir = os.getcwd()
-        rel_input = os.path.relpath(input_path, base_dir)
-        rel_mp4   = os.path.relpath(mp4_out, base_dir)
-        rel_hls   = os.path.relpath(hls_out, base_dir)
-        rel_webm  = os.path.relpath(webm_out, base_dir)
+        # ✅ Generate filter
+        filter_complex = NewsOverlayFilter(cfg).build()
 
-        docker_input = f"/work/{rel_input}"
-        docker_mp4   = f"/work/{rel_mp4}"
-        docker_hls   = f"/work/{rel_hls}"
-        docker_webm  = f"/work/{rel_webm}"
+        ffmpeg_args = [
+            "-i", input_path,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-map", "0:a?",
+        ]
 
-        # =========================================================
-        # ✅ STEP 1: STANDARD MP4
-        # =========================================================
-        _run([
-            "-i", docker_input,
-            "-vf", vf_filter,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            docker_mp4,
-            "-y"
-        ], "MP4 compression")
+    else:
+        ffmpeg_args = [
+            "-i", input_path,
+            "-vf", "scale=1280:720",
+        ]
 
-        # =========================================================
-        # ✅ STEP 2: HLS
-        # =========================================================
-        _run([
-            "-i", docker_mp4,
-            "-c", "copy",
-            "-start_number", "0",
-            "-hls_time", "6",
-            "-hls_list_size", "0",
-            "-f", "hls",
-            docker_hls
-        ], "HLS generation")
+    # ✅ Run FFmpeg (Docker)
+    _run([
+        *ffmpeg_args,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-y",
+        mp4_out,
+    ], label=f"{video_id}/mp4", mount_dir=mount_dir)
 
-        # =========================================================
-        # ✅ STEP 3: WEBM
-        # =========================================================
-        _run([
-            "-i", docker_mp4,
-            "-c:v", "libvpx-vp9",
-            "-b:v", "1M",
-            "-c:a", "libopus",
-            docker_webm
-        ], "WebM generation")
+    return {"mp4": mp4_out}
 
-        update_video_status(video_id, VideoStatus.READY)
 
-        return {
-            "mp4": mp4_out,
-            "hls": hls_out,
-            "webm": webm_out
-        }
+  
+def main():
+    parser = argparse.ArgumentParser(description="Test FFmpeg News Overlay Pipeline")
 
-    except Exception as e:
-        update_video_status(video_id, VideoStatus.FAILED, str(e))
-        raise
+    parser.add_argument("--input", required=True, help="Input video path")
+    parser.add_argument("--output_dir", required=True, help="Output directory")
+    parser.add_argument("--video_id", default="test123", help="Video ID")
+
+    parser.add_argument("--channel", default="NEWS 24")
+    parser.add_argument("--headline", default="Breaking News Test")
+    parser.add_argument("--ticker", default="This is a test ticker scrolling text")
+    parser.add_argument("--badge", default="BREAKING")
+
+    parser.add_argument("--disable_overlay", action="store_true")
+
+    args = parser.parse_args()
+
+    # 🔹 Ensure absolute paths (important for Docker)
+    input_path = os.path.abspath(args.input)
+    output_dir = os.path.abspath(args.output_dir)
+
+    overlay_config = {
+        "enabled": not args.disable_overlay,
+        "channel_name": args.channel,
+        "headline": args.headline,
+        "ticker": args.ticker,
+        "badge_text": args.badge,
+    }
+
+    result = process_video(
+        video_id=args.video_id,
+        input_path=input_path,
+        output_dir=output_dir,
+        overlay=overlay_config
+    )
+
+    print("\n✅ Processing Done!")
+    print(result)
+
+
+if __name__ == "__main__":
+    main()
