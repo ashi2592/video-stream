@@ -18,8 +18,8 @@ frontend/.vite/
 
 # Temp uploads / outputs
 /tmp/uploads/
-/backend/uploads/
-/backend/outputs/
+/uploads/
+/outputs/
 /tmp/outputs/
 /tmp/hls/
 
