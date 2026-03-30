@@ -1,4 +1,4 @@
-from news_overlay import NewsOverlayFilter, OverlayConfig
+from overlays.news_overlay import NewsOverlayFilter, OverlayConfig
 import os
 import argparse
 import subprocess

@@ -13,6 +13,7 @@ Active stream check:
 
 import os
 import re
+from urllib.request import Request
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -33,6 +34,12 @@ from database.mongo_model import (
     VideoStatus,
 )
 
+
+import os
+import socket
+import uuid
+from fastapi import Request
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Video Platform API")
@@ -50,7 +57,7 @@ UPLOAD_DIR    = os.getenv("UPLOAD_DIR",     "uploads")
 MEDIA_BASE    = os.getenv("MEDIA_BASE_URL", "http://localhost:8000")
 RTMP_BASE     = os.getenv("RTMP_BASE",      "rtmp://localhost:1935/live")
 HLS_BASE_URL  = os.getenv("HLS_BASE_URL",   "http://localhost:8080/live")
-NGINX_STAT    = os.getenv("NGINX_STAT_URL", "http://rtmp:8080/stat")   # internal Docker URL
+NGINX_STAT    = os.getenv("NGINX_STAT_URL", "http://localhost:8080/stat")   # internal Docker URL
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 500 * 1024 * 1024))
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -316,30 +323,6 @@ def get_video_urls(video_id: str):
 
 # ── Live stream ───────────────────────────────────────────────────────────────
 
-@app.get("/stream/key")
-def get_stream_key():
-    """
-    Generate a unique RTMP stream key.
-
-    Returns:
-      rtmp_url  — push destination for OBS / FFmpeg
-      hls_url   — browser playback URL (.m3u8) served by nginx-rtmp
-      stream_key
-    """
-    stream_key = str(uuid.uuid4()).replace("-", "")
-    return {
-        "stream_key": stream_key,
-        # Push URL — external clients use the public host, not the Docker alias
-        "rtmp_url":   f"rtmp://localhost:1935/live/{stream_key}",
-        # HLS playback URL — served by nginx on port 8080
-        "hls_url":    f"{HLS_BASE_URL}/{stream_key}/index.m3u8",
-        "instructions": {
-            "obs":    f"Settings → Stream → Custom RTMP → Server: rtmp://localhost:1935/live  Key: {stream_key}",
-            "ffmpeg": f"ffmpeg -re -i input.mp4 -c copy -f flv rtmp://localhost:1935/live/{stream_key}",
-        },
-    }
-
-
 @app.get("/stream/active")
 async def get_active_streams():
     """
@@ -380,3 +363,84 @@ async def get_active_streams():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+
+import os
+import socket
+import uuid
+from fastapi import Request
+
+# ── Add this helper near the top of main.py ───────────────────────────────────
+
+def _lan_ip() -> str:
+    """
+    Best-effort LAN IP detection.
+    Priority:
+      1. PUBLIC_HOST env var  (set this in docker-compose for a fixed address)
+      2. socket trick         (connects a UDP socket to 8.8.8.8 to find default route IP)
+      3. fallback to hostname
+    """
+    forced = os.getenv("PUBLIC_HOST")          # e.g. "192.168.1.42" or "stream.myhost.com"
+    if forced:
+        return forced
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return socket.gethostname()
+    
+
+
+@app.get("/stream/key")
+def get_stream_key(request: Request):
+    """
+    Generate a unique RTMP stream key.
+
+    Returns both localhost URLs (for the same machine) and
+    LAN/device URLs (for phones, tablets, OBS on other machines).
+
+    Env vars:
+      PUBLIC_HOST   — override the detected LAN IP with a fixed hostname/IP
+      RTMP_PORT     — RTMP port (default 1935)
+      HLS_PORT      — nginx HLS port (default 8080)
+    """
+    stream_key = str(uuid.uuid4()).replace("-", "")
+
+    rtmp_port = os.getenv("RTMP_PORT", "1935")
+    hls_port  = os.getenv("HLS_PORT",  "8080")
+
+    # ── Same-machine URLs (always localhost) ──────────────────────────────────
+    local_rtmp = f"rtmp://localhost:{rtmp_port}/live/{stream_key}"
+    local_hls  = f"http://localhost:{hls_port}/live/{stream_key}/index.m3u8"
+
+    # ── Other-device URLs (LAN IP) ────────────────────────────────────────────
+    lan_ip     = _lan_ip()
+    device_rtmp = f"rtmp://{lan_ip}:{rtmp_port}/live/{stream_key}"
+    device_hls  = f"http://{lan_ip}:{hls_port}/live/{stream_key}/index.m3u8"
+
+    return {
+        "stream_key": stream_key,
+
+        # ── Local (same machine) ──────────────────────────────────────────────
+        "rtmp_url":  local_rtmp,       # kept for backward-compat
+        "hls_url":   local_hls,        # kept for backward-compat
+
+        # ── Other devices on the network ──────────────────────────────────────
+        "device_rtmp_url": device_rtmp,
+        "device_hls_url":  device_hls,
+
+        "lan_ip": lan_ip,
+
+        "instructions": {
+            "obs_local":    f"Server: rtmp://localhost:{rtmp_port}/live   Key: {stream_key}",
+            "obs_device":   f"Server: rtmp://{lan_ip}:{rtmp_port}/live   Key: {stream_key}",
+            "ffmpeg_local": f"ffmpeg -re -i input.mp4 -c copy -f flv rtmp://localhost:{rtmp_port}/live/{stream_key}",
+            "ffmpeg_device":f"ffmpeg -re -i input.mp4 -c copy -f flv rtmp://{lan_ip}:{rtmp_port}/live/{stream_key}",
+            "vlc_hls":      f"vlc {device_hls}",
+            "phone_player": f"Open in phone browser or VLC:  {device_hls}",
+        },
+    }
