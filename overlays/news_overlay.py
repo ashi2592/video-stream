@@ -358,7 +358,7 @@ def process_video_with_news_overlay(
     """
     try:
         # ── Lazy import (only needed inside the platform) ────────────────────
-        from mongo_model import update_video_status, VideoStatus  # type: ignore
+        from utils.mongo_model import update_video_status, VideoStatus  # type: ignore
         _has_mongo = True
     except ImportError:
         _has_mongo = False

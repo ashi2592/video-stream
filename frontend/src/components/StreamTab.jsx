@@ -1,6 +1,12 @@
+// StreamTab.jsx — HLS Streaming feature for LIVEWIRE Video Platform
+// Drop-in replacement for the missing StreamTab component
+// Matches the existing design system: Barlow Condensed / Share Tech Mono, CSS vars
+
 import { useState, useRef, useEffect, useCallback } from "react";
 
-// ─── SHARED PRIMITIVES (inline, matching App.jsx palette) ─────────────────────
+// ─── RE-EXPORT SHARED PRIMITIVES (copy from App.jsx if needed) ───────────────
+// If these are already exported from App.jsx, import them instead.
+
 function Pill({ color = "#00d4ff", children }) {
   return (
     <span style={{
@@ -32,20 +38,6 @@ function Tag({ label, color = "var(--muted)" }) {
   return <span style={{ fontSize:".65rem",fontFamily:"'Share Tech Mono',monospace",color,letterSpacing:1,textTransform:"uppercase" }}>{label}</span>;
 }
 
-function CopyButton({ text }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1800); }}
-      style={{ color: copied ? "var(--green)" : "var(--muted)", padding:"3px 8px", transition:"color .2s",
-        display:"flex",alignItems:"center",gap:4,fontSize:".7rem",fontFamily:"'Share Tech Mono',monospace",
-        background:"var(--bg3)",border:"1px solid var(--border)" }}
-    >
-      {copied ? "✓ Copied" : "⧉ Copy"}
-    </button>
-  );
-}
-
 function Panel({ title, badge, children, accent = "var(--accent)", style={} }) {
   return (
     <div style={{
@@ -62,539 +54,694 @@ function Panel({ title, badge, children, accent = "var(--accent)", style={} }) {
   );
 }
 
-function fmtTime(s) {
-  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
-  return `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
-}
-
-function fmt(bytes) {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / 1048576).toFixed(2) + " MB";
-}
-
-// ─── VU METER ─────────────────────────────────────────────────────────────────
-function VuMeter({ stream }) {
-  const canvasRef = useRef();
-  const rafRef    = useRef();
-  const analyserRef = useRef();
-
-  useEffect(() => {
-    if (!stream) { cancelAnimationFrame(rafRef.current); return; }
-    try {
-      const ctx = new AudioContext();
-      const src = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 64;
-      src.connect(analyser);
-      analyserRef.current = analyser;
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const draw = () => {
-        rafRef.current = requestAnimationFrame(draw);
-        analyser.getByteFrequencyData(data);
-        const c = canvas.getContext("2d");
-        c.clearRect(0,0,canvas.width,canvas.height);
-        const bars = 16;
-        const slice = Math.floor(data.length / bars);
-        for (let i = 0; i < bars; i++) {
-          const avg = data.slice(i*slice,(i+1)*slice).reduce((a,b)=>a+b,0) / slice;
-          const h = (avg / 255) * canvas.height;
-          const hue = avg > 180 ? "#ff3c5f" : avg > 100 ? "#ffb400" : "#00ff9d";
-          c.fillStyle = hue;
-          c.fillRect(i * (canvas.width/bars) + 1, canvas.height - h, (canvas.width/bars) - 2, h);
-        }
-      };
-      draw();
-      return () => { cancelAnimationFrame(rafRef.current); ctx.close(); };
-    } catch {}
-  }, [stream]);
-
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false);
   return (
-    <canvas ref={canvasRef} width={200} height={28}
-      style={{ width:"100%", height:28, display:"block", background:"var(--bg3)", borderRadius:1 }}/>
+    <button
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1800); }}
+      style={{ color: copied ? "var(--green)" : "var(--muted)", padding:"3px 8px", transition:"color .2s",
+        display:"flex",alignItems:"center",gap:4,fontSize:".7rem",fontFamily:"'Share Tech Mono',monospace",
+        border:"1px solid var(--border)",background:"var(--bg3)" }}
+    >
+      {copied ? "✓ Copied" : "⧉ Copy"}
+    </button>
   );
 }
 
-// ─── STREAM KEY ROW ───────────────────────────────────────────────────────────
-function KeyRow({ label, value, mono = true }) {
+// ─── HLS PLAYER ──────────────────────────────────────────────────────────────
+// Lightweight HLS player using hls.js (loaded via CDN script tag)
+function HLSPlayer({ src, style = {} }) {
+  const videoRef = useRef(null);
+  const hlsRef   = useRef(null);
+  const [hlsReady, setHlsReady] = useState(false);
+  const [error,    setError]    = useState(null);
+  const [stats,    setStats]    = useState({ level: -1, levels: [], latency: null, bitrate: 0 });
+
+  // Load hls.js from CDN if not already present
+  useEffect(() => {
+    if (window.Hls) { setHlsReady(true); return; }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.12/hls.min.js";
+    script.onload = () => setHlsReady(true);
+    script.onerror = () => setError("Failed to load HLS library");
+    document.head.appendChild(script);
+  }, []);
+
+  useEffect(() => {
+    if (!hlsReady || !src || !videoRef.current) return;
+    setError(null);
+
+    // Native HLS support (Safari)
+    if (!window.Hls.isSupported() && videoRef.current.canPlayType("application/vnd.apple.mpegurl")) {
+      videoRef.current.src = src;
+      return;
+    }
+
+    if (!window.Hls.isSupported()) {
+      setError("HLS is not supported in this browser.");
+      return;
+    }
+
+    const hls = new window.Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      backBufferLength: 90,
+    });
+    hlsRef.current = hls;
+
+    hls.loadSource(src);
+    hls.attachMedia(videoRef.current);
+
+    hls.on(window.Hls.Events.MANIFEST_PARSED, (_, data) => {
+      setStats(s => ({ ...s, levels: data.levels, level: hls.currentLevel }));
+      videoRef.current?.play().catch(() => {});
+    });
+
+    hls.on(window.Hls.Events.LEVEL_SWITCHED, (_, data) => {
+      const bw = hls.levels[data.level]?.bitrate || 0;
+      setStats(s => ({ ...s, level: data.level, bitrate: bw }));
+    });
+
+    hls.on(window.Hls.Events.FRAG_LOADED, (_, data) => {
+      setStats(s => ({ ...s, latency: Math.round(data.frag.stats.loading.end - data.frag.stats.loading.start) }));
+    });
+
+    hls.on(window.Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) {
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+        } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          setError(`HLS fatal error: ${data.details}`);
+          hls.destroy();
+        }
+      }
+    });
+
+    return () => { hls.destroy(); hlsRef.current = null; };
+  }, [hlsReady, src]);
+
+  const setLevel = (lvl) => {
+    if (hlsRef.current) { hlsRef.current.currentLevel = lvl; setStats(s => ({...s, level: lvl})); }
+  };
+
   return (
-    <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"var(--bg3)",border:"1px solid var(--border)",marginBottom:6 }}>
+    <div style={{ position:"relative", background:"#000", ...style }}>
+      <video ref={videoRef} controls muted playsInline
+        style={{ width:"100%", height:"100%", objectFit:"contain", display:"block" }}/>
+
+      {/* HLS Quality overlay */}
+      {stats.levels.length > 1 && (
+        <div style={{ position:"absolute", top:8, right:8, display:"flex", gap:4, flexWrap:"wrap", justifyContent:"flex-end" }}>
+          <button onClick={() => setLevel(-1)}
+            style={{ padding:"2px 8px", fontFamily:"'Share Tech Mono',monospace", fontSize:".62rem",
+              background: stats.level === -1 ? "var(--accent)" : "rgba(0,0,0,.7)",
+              color: stats.level === -1 ? "#000" : "var(--accent)",
+              border:"1px solid var(--accent)", cursor:"pointer" }}>AUTO
+          </button>
+          {stats.levels.map((l, i) => (
+            <button key={i} onClick={() => setLevel(i)}
+              style={{ padding:"2px 8px", fontFamily:"'Share Tech Mono',monospace", fontSize:".62rem",
+                background: stats.level === i ? "var(--accent)" : "rgba(0,0,0,.7)",
+                color: stats.level === i ? "#000" : "var(--muted)",
+                border:"1px solid var(--border)", cursor:"pointer" }}>
+              {l.height ? `${l.height}p` : `L${i}`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Stats bar */}
+      {(stats.bitrate > 0 || stats.latency !== null) && (
+        <div style={{ position:"absolute", bottom:0, left:0, right:0,
+          background:"linear-gradient(transparent,rgba(0,0,0,.8))", padding:"16px 10px 6px",
+          display:"flex", gap:16, pointerEvents:"none" }}>
+          {stats.bitrate > 0 && (
+            <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".62rem", color:"var(--accent)" }}>
+              ↑ {(stats.bitrate / 1000).toFixed(0)} kbps
+            </span>
+          )}
+          {stats.latency !== null && (
+            <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".62rem", color:"var(--green)" }}>
+              ⏱ {stats.latency}ms
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {error && (
+        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center",
+          background:"rgba(0,0,0,.85)", flexDirection:"column", gap:8 }}>
+          <span style={{ fontSize:"1.5rem" }}>⚠</span>
+          <span style={{ color:"var(--red)", fontFamily:"'Share Tech Mono',monospace", fontSize:".75rem", textAlign:"center", padding:"0 16px" }}>{error}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── STREAM STATUS BADGE ─────────────────────────────────────────────────────
+function StreamStatusBadge({ status }) {
+  const cfg = {
+    idle:       { color:"var(--muted)",   label:"OFFLINE"  },
+    connecting: { color:"var(--amber)",   label:"CONNECTING" },
+    live:       { color:"var(--red)",     label:"LIVE"     },
+    ended:      { color:"var(--muted)",   label:"ENDED"    },
+    error:      { color:"var(--red)",     label:"ERROR"    },
+  }[status] || { color:"var(--muted)", label:"—" };
+  return (
+    <Pill color={cfg.color}>
+      {status === "live" && <LiveDot color={cfg.color}/>}
+      {cfg.label}
+    </Pill>
+  );
+}
+
+// ─── METRIC TILE ─────────────────────────────────────────────────────────────
+function MetricTile({ label, value, unit, accent = "var(--accent)" }) {
+  return (
+    <div style={{ background:"var(--bg3)", border:"1px solid var(--border)", padding:"10px 14px", flex:1 }}>
       <Tag label={label}/>
-      <div style={{ display:"flex",alignItems:"center",gap:8,minWidth:0 }}>
-        <span style={{
-          fontFamily: mono ? "'Share Tech Mono',monospace" : "'Barlow',sans-serif",
-          fontSize:".72rem",color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:200
-        }}>{value}</span>
-        <CopyButton text={value}/>
+      <div style={{ marginTop:4, display:"flex", alignItems:"baseline", gap:4 }}>
+        <span style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:"1.5rem", color: accent }}>{value}</span>
+        {unit && <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".65rem", color:"var(--muted)" }}>{unit}</span>}
       </div>
     </div>
   );
 }
 
-// ─── MAIN STREAM TAB ──────────────────────────────────────────────────────────
+// ─── MAIN STREAM TAB ─────────────────────────────────────────────────────────
 export function StreamTab({ apiBase }) {
-  // ── RTMP state ──
-  const [streamInfo,   setStreamInfo]   = useState(null);   // { stream_key, rtmp_url, hls_url }
-  const [keyLoading,   setKeyLoading]   = useState(false);
-  const [activeStreams, setActiveStreams] = useState([]);
-  const [pollActive,   setPollActive]   = useState(false);
-  const activeRef = useRef();
+  // ── State ────────────────────────────────────────────────────────────────
+  const [mode,         setMode]         = useState("watch");   // "watch" | "push"
+  const [streamStatus, setStreamStatus] = useState("idle");    // idle | connecting | live | ended | error
+  const [hlsUrl,       setHlsUrl]       = useState("");
+  const [activeHls,    setActiveHls]    = useState(null);      // confirmed playing URL
+  const [streamKey,    setStreamKey]    = useState("");
+  const [serverUrl,    setServerUrl]    = useState("rtmp://your-server/live");
+  const [streamInfo,   setStreamInfo]   = useState(null);
+  const [metrics,      setMetrics]      = useState({ viewers: 0, uptime: 0, segments: 0, errors: 0 });
+  const [log,          setLog]          = useState([]);
+  const [overlay,      setOverlay]      = useState({ channel_name:"NEWS 24", headline:"BREAKING NEWS", ticker:"Live stream in progress", badge_text:"LIVE" });
+  const [pushActive,   setPushActive]   = useState(false);
+  const [apiStreams,   setApiStreams]    = useState([]);
+  const [loadingStreams, setLoadingStreams] = useState(false);
 
-  // ── Local preview / record state ──
-  const [mediaMode,   setMediaMode]   = useState("webcam"); // "webcam" | "screen"
-  const [stream,      setStream]      = useState(null);
-  const [recording,   setRecording]   = useState(false);
-  const [recElapsed,  setRecElapsed]  = useState(0);
-  const [blobUrl,     setBlobUrl]     = useState(null);
-  const [recChunks,   setRecChunks]   = useState([]);
-  const [uploading,   setUploading]   = useState(false);
-  const [uploadRes,   setUploadRes]   = useState(null);
-  const [recSize,     setRecSize]     = useState(0);
+  const pollRef   = useRef(null);
+  const uptimeRef = useRef(null);
+  const uptimeSec = useRef(0);
 
-  // ── Simultaneous push state ──
-  const [pushing,     setPushing]     = useState(false);   // "pushing to RTMP via fetch"
-  const [pushStatus,  setPushStatus]  = useState(null);    // info string
+  // ── Logging ──────────────────────────────────────────────────────────────
+  const addLog = useCallback((msg, type = "info") => {
+    const ts = new Date().toLocaleTimeString("en-US", { hour12:false });
+    setLog(prev => [...prev.slice(-59), { ts, msg, type }]);
+  }, []);
 
-  // ── Overlay meta ──
-  const [meta, setMeta] = useState({
-    channel_name:"NEWS 24", headline:"BREAKING NEWS", ticker:"Live broadcast in progress", badge_text:"LIVE"
-  });
-
-  const videoRef   = useRef();
-  const mrRef      = useRef();
-  const timerRef   = useRef();
-  const chunksRef  = useRef([]);
-  const sizeRef    = useRef(0);
-
-  // ── Fetch RTMP key ──────────────────────────────────────────────────────────
-  const fetchKey = async () => {
-    setKeyLoading(true);
+  // ── Load streams from API ─────────────────────────────────────────────────
+  const fetchStreams = useCallback(async () => {
+    setLoadingStreams(true);
     try {
-      const r = await fetch(`${apiBase}/stream/key`);
+      const r = await fetch(`${apiBase}/streams`);
+      if (r.ok) {
+        const d = await r.json();
+        setApiStreams(Array.isArray(d) ? d : d.streams || []);
+        addLog(`Fetched ${(Array.isArray(d) ? d : d.streams || []).length} stream(s) from API`);
+      }
+    } catch(e) {
+      addLog(`Could not load streams: ${e.message}`, "error");
+    }
+    setLoadingStreams(false);
+  }, [apiBase, addLog]);
+
+  // ── Create HLS stream via API ─────────────────────────────────────────────
+  const createStream = useCallback(async () => {
+    setStreamStatus("connecting");
+    addLog("Creating HLS stream via API…");
+    try {
+      const r = await fetch(`${apiBase}/streams/create`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ ...overlay, enabled: true }),
+      });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       const d = await r.json();
       setStreamInfo(d);
-    } catch(e) { alert("Could not reach API: " + e.message); }
-    setKeyLoading(false);
-  };
-
-  // ── Poll active streams ─────────────────────────────────────────────────────
-  const startActivePoll = () => {
-    setPollActive(true);
-    const poll = async () => {
-      try {
-        const r = await fetch(`${apiBase}/stream/active`);
-        const d = await r.json();
-        setActiveStreams(d.active || []);
-      } catch {}
-    };
-    poll();
-    activeRef.current = setInterval(poll, 4000);
-  };
-
-  const stopActivePoll = () => {
-    clearInterval(activeRef.current);
-    setPollActive(false);
-  };
-
-  // ── Media capture ───────────────────────────────────────────────────────────
-  const startPreview = async () => {
-    try {
-      const s = mediaMode === "webcam"
-        ? await navigator.mediaDevices.getUserMedia({ video:true, audio:true })
-        : await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
-      setStream(s);
-      setBlobUrl(null);
-      setUploadRes(null);
-      if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); }
-    } catch(e) { alert("Could not access media: " + e.message); }
-  };
-
-  const stopPreview = () => {
-    stopRecording();
-    stream?.getTracks().forEach(t => t.stop());
-    setStream(null);
-    setPushStatus(null);
-    if (videoRef.current) videoRef.current.srcObject = null;
-  };
-
-  // ── Recording ───────────────────────────────────────────────────────────────
-  const startRecording = () => {
-    if (!stream) return;
-    chunksRef.current = [];
-    sizeRef.current = 0;
-    setBlobUrl(null);
-    setUploadRes(null);
-    setRecSize(0);
-    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-      ? "video/webm;codecs=vp9" : "video/webm";
-    const mr = new MediaRecorder(stream, { mimeType: mime });
-    mr.ondataavailable = e => {
-      if (e.data.size > 0) {
-        chunksRef.current.push(e.data);
-        sizeRef.current += e.data.size;
-        setRecSize(sizeRef.current);
+      const hls = d.hls_url || d.playback_url || d.url;
+      if (hls) {
+        setActiveHls(hls);
+        setHlsUrl(hls);
       }
-    };
-    mr.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type:"video/webm" });
-      setBlobUrl(URL.createObjectURL(blob));
-      setRecChunks([...chunksRef.current]);
-    };
-    mr.start(500);
-    mrRef.current = mr;
-    setRecording(true);
-    setRecElapsed(0);
-    timerRef.current = setInterval(() => setRecElapsed(p => p + 1), 1000);
-    setPushStatus("⏺ Recording locally…");
+      setStreamStatus("live");
+      addLog(`Stream created · ID: ${d.stream_id || d.id}`, "success");
+      addLog(`HLS endpoint: ${hls || "—"}`, "success");
+      startUptime();
+      startPoll(d.stream_id || d.id);
+    } catch(e) {
+      setStreamStatus("error");
+      addLog(`Failed to create stream: ${e.message}`, "error");
+    }
+  }, [apiBase, overlay, addLog]);
+
+  // ── Watch a manual HLS URL ────────────────────────────────────────────────
+  const watchUrl = () => {
+    if (!hlsUrl.trim()) return;
+    setActiveHls(hlsUrl.trim());
+    setStreamStatus("live");
+    addLog(`Watching HLS stream: ${hlsUrl.trim()}`, "success");
+    startUptime();
   };
 
-  const stopRecording = () => {
-    if (mrRef.current?.state !== "inactive") mrRef.current?.stop();
-    clearInterval(timerRef.current);
-    setRecording(false);
-    setPushing(false);
-    setPushStatus(null);
+  const stopWatching = () => {
+    setActiveHls(null);
+    setStreamStatus("idle");
+    stopUptime();
+    addLog("Stream stopped");
   };
 
-  // ── Simulate RTMP push status (real push happens via OBS / ffmpeg CLI) ──────
-  const startRtmpPush = () => {
-    if (!streamInfo) return;
-    setPushing(true);
-    setPushStatus(`🔴 Pushing to RTMP — use OBS or FFmpeg CLI with key below`);
-  };
-
-  const stopRtmpPush = () => {
-    setPushing(false);
-    setPushStatus(null);
-  };
-
-  // ── Start both simultaneously ────────────────────────────────────────────────
-  const startLiveSession = async () => {
-    if (!streamInfo) await fetchKey();
-    await startPreview();
-  };
-
-  // ── Upload recorded clip ────────────────────────────────────────────────────
-  const uploadRecording = async () => {
-    if (!recChunks.length) return;
-    setUploading(true);
-    const blob = new Blob(recChunks, { type:"video/webm" });
-    const fd = new FormData();
-    fd.append("file", blob, "live-session.webm");
-    Object.entries(meta).forEach(([k,v]) => fd.append(k,v));
-    fd.append("enabled","true");
+  // ── Create RTMP push stream ───────────────────────────────────────────────
+  const createPushStream = useCallback(async () => {
+    setPushActive(true);
+    addLog("Registering RTMP push endpoint…");
     try {
-      const r = await fetch(`${apiBase}/video/upload-full`, { method:"POST", body:fd });
+      const r = await fetch(`${apiBase}/streams/push`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ ...overlay, server_url: serverUrl }),
+      });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       const d = await r.json();
-      setUploadRes(d);
-    } catch(e) { setUploadRes({ error: e.message }); }
-    setUploading(false);
+      setStreamInfo(d);
+      const key = d.stream_key || d.key || d.push_key || crypto.randomUUID().slice(0,16);
+      setStreamKey(key);
+      const hls = d.hls_url || d.playback_url;
+      if (hls) { setActiveHls(hls); setHlsUrl(hls); }
+      setStreamStatus("live");
+      addLog(`RTMP endpoint ready · key: ${key}`, "success");
+      startUptime();
+    } catch(e) {
+      addLog(`Push setup failed: ${e.message}`, "error");
+      // Demo mode — generate a key locally for UI preview
+      const demoKey = `livewire-${Math.random().toString(36).slice(2,10)}`;
+      setStreamKey(demoKey);
+      addLog(`Demo mode — stream key generated: ${demoKey}`, "warn");
+    }
+    setPushActive(false);
+  }, [apiBase, overlay, serverUrl, addLog]);
+
+  // ── Polling for stream stats ──────────────────────────────────────────────
+  const startPoll = (id) => {
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`${apiBase}/streams/${id}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        setMetrics(m => ({
+          viewers:  d.viewer_count  ?? m.viewers,
+          segments: d.segment_count ?? m.segments + 1,
+          errors:   d.error_count   ?? m.errors,
+          uptime:   m.uptime,
+        }));
+        if (d.status === "ended" || d.status === "stopped") {
+          setStreamStatus("ended");
+          stopUptime();
+          clearInterval(pollRef.current);
+          addLog("Stream ended by server");
+        }
+      } catch {}
+    }, 4000);
+  };
+
+  const startUptime = () => {
+    clearInterval(uptimeRef.current);
+    uptimeSec.current = 0;
+    uptimeRef.current = setInterval(() => {
+      uptimeSec.current += 1;
+      setMetrics(m => ({ ...m, uptime: uptimeSec.current }));
+    }, 1000);
+  };
+
+  const stopUptime = () => clearInterval(uptimeRef.current);
+
+  const fmtUptime = (s) => {
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h > 0 ? `${h}h ${String(m).padStart(2,"0")}m` : `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+  };
+
+  const endStream = async () => {
+    if (streamInfo?.stream_id || streamInfo?.id) {
+      try {
+        await fetch(`${apiBase}/streams/${streamInfo.stream_id || streamInfo.id}/stop`, { method:"POST" });
+      } catch {}
+    }
+    setStreamStatus("ended");
+    setActiveHls(null);
+    stopUptime();
+    clearInterval(pollRef.current);
+    addLog("Stream ended");
   };
 
   useEffect(() => () => {
-    clearInterval(timerRef.current);
-    clearInterval(activeRef.current);
-    stream?.getTracks().forEach(t => t.stop());
+    clearInterval(pollRef.current);
+    clearInterval(uptimeRef.current);
   }, []);
 
-  // ── Derived ──────────────────────────────────────────────────────────────────
-  const isLive = stream && (recording || pushing);
+  // ── UI ───────────────────────────────────────────────────────────────────
+  const isLive = streamStatus === "live";
+  const isConnecting = streamStatus === "connecting";
 
   return (
     <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:16 }}>
 
-      {/* ── LEFT COLUMN ─────────────────────────────────────────────────────── */}
+      {/* ── LEFT COLUMN ── */}
       <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
 
-        {/* Live Preview Panel */}
-        <Panel
-          title="Live Session"
-          accent={isLive ? "var(--red)" : "var(--accent)"}
-          badge={
-            isLive
-              ? <Pill color="var(--red)"><LiveDot/>ON AIR · {fmtTime(recElapsed)}{recSize > 0 ? ` · ${fmt(recSize)}` : ""}</Pill>
-              : <Pill color="var(--muted)">STANDBY</Pill>
-          }
-        >
-          {/* Source selector */}
-          <div style={{ display:"flex", gap:8, marginBottom:12 }}>
-            {["webcam","screen"].map(m => (
-              <button key={m} onClick={() => { if(!stream) setMediaMode(m); }}
-                style={{
-                  flex:1,padding:"7px 0",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,
-                  fontSize:".9rem",letterSpacing:2,textTransform:"uppercase",
-                  background: mediaMode===m ? (m==="webcam" ? "var(--green)" : "var(--accent)") : "var(--bg3)",
-                  color: mediaMode===m ? "#000" : "var(--muted)",
-                  border:`1px solid ${mediaMode===m ? (m==="webcam"?"var(--green)":"var(--accent)") : "var(--border)"}`,
-                  cursor: stream ? "not-allowed":"pointer",transition:"all .2s"
-                }}>
-                {m === "webcam" ? "🎥 Webcam" : "🖥 Screen"}
-              </button>
-            ))}
-          </div>
+        {/* Mode Switcher */}
+        <div style={{ display:"flex", gap:0, border:"1px solid var(--border)", overflow:"hidden" }}>
+          {[
+            { id:"watch", icon:"📺", label:"Watch HLS Stream" },
+            { id:"push",  icon:"📡", label:"Push / RTMP Out"  },
+          ].map(m => (
+            <button key={m.id} onClick={() => !isLive && setMode(m.id)}
+              style={{
+                flex:1, padding:"10px 0", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:".9rem", letterSpacing:2, textTransform:"uppercase",
+                background: mode === m.id ? "var(--accent)" : "var(--bg3)",
+                color: mode === m.id ? "#000" : "var(--muted)",
+                borderRight: m.id === "watch" ? "1px solid var(--border)" : "none",
+                cursor: isLive ? "not-allowed" : "pointer", transition:"all .2s"
+              }}>
+              <span>{m.icon}</span>{m.label}
+            </button>
+          ))}
+        </div>
 
-          {/* Video canvas */}
-          <div style={{
-            position:"relative", background:"#000", aspectRatio:"16/9",
-            marginBottom:12, border:`1px solid ${isLive ? "rgba(255,60,95,.4)" : "var(--border)"}`,
-            boxShadow: isLive ? "0 0 0 1px rgba(255,60,95,.2), 0 0 24px rgba(255,60,95,.08)" : "none",
-            transition:"all .3s"
-          }}>
-            <video ref={videoRef} muted style={{ width:"100%",height:"100%",objectFit:"contain" }}/>
+        {/* WATCH MODE */}
+        {mode === "watch" && (
+          <Panel title="HLS Stream Viewer" accent="var(--accent)"
+            badge={<StreamStatusBadge status={streamStatus}/>}>
 
-            {/* Overlay preview on video */}
-            {isLive && (
-              <>
-                <div style={{ position:"absolute",top:10,left:10,background:"var(--red)",color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:".65rem",padding:"2px 8px",letterSpacing:2 }}>
-                  {meta.badge_text || "LIVE"}
-                </div>
-                <div style={{ position:"absolute",top:10,right:10,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".7rem",letterSpacing:2,textShadow:"0 1px 4px rgba(0,0,0,.8)" }}>
-                  {meta.channel_name}
-                </div>
-                <div style={{ position:"absolute",bottom:20,left:0,right:0,background:"rgba(0,0,0,.82)",padding:"4px 10px" }}>
-                  <div style={{ color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".85rem",letterSpacing:1 }}>{meta.headline}</div>
-                </div>
-                <div style={{ position:"absolute",bottom:0,left:0,right:0,background:"var(--red)",overflow:"hidden",height:20 }}>
-                  <div style={{ height:"100%",display:"flex",alignItems:"center",animation:"ticker 12s linear infinite",whiteSpace:"nowrap" }}>
-                    <span style={{ color:"#fff",fontFamily:"'Share Tech Mono',monospace",fontSize:".6rem",paddingLeft:"100%" }}>{meta.ticker}</span>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {!stream && (
-              <div style={{ position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8 }}>
-                <div style={{ fontSize:"3rem" }}>{mediaMode==="webcam"?"📷":"🖥"}</div>
-                <span style={{ color:"var(--muted)",fontSize:".78rem",fontFamily:"'Share Tech Mono',monospace" }}>No preview — start session below</span>
-              </div>
-            )}
-
-            {/* REC indicator */}
-            {recording && (
-              <div style={{ position:"absolute",bottom:46,right:10,display:"flex",alignItems:"center",gap:5,background:"rgba(0,0,0,.75)",padding:"3px 8px",borderRadius:2 }}>
-                <LiveDot color="var(--red)"/>
-                <span style={{ color:"#fff",fontFamily:"'Share Tech Mono',monospace",fontSize:".65rem" }}>REC {fmtTime(recElapsed)}</span>
-              </div>
-            )}
-          </div>
-
-          {/* VU Meter */}
-          {stream && (
-            <div style={{ marginBottom:12 }}>
-              <Tag label="AUDIO LEVELS"/>
-              <div style={{ marginTop:4 }}><VuMeter stream={stream}/></div>
+            {/* URL Input */}
+            <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+              <input
+                value={hlsUrl}
+                onChange={e => setHlsUrl(e.target.value)}
+                placeholder="https://example.com/stream/playlist.m3u8"
+                disabled={isLive}
+                style={{ flex:1, background:"var(--bg3)", border:"1px solid var(--border)", color:"var(--text)",
+                  padding:"8px 12px", fontSize:".8rem", fontFamily:"'Share Tech Mono',monospace",
+                  opacity: isLive ? .5 : 1 }}
+                onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                onBlur={e => e.target.style.borderColor = "var(--border)"}
+                onKeyDown={e => e.key === "Enter" && !isLive && watchUrl()}
+              />
+              {!isLive ? (
+                <button onClick={watchUrl} disabled={!hlsUrl.trim() || isConnecting}
+                  style={{ padding:"8px 20px", background: hlsUrl.trim() ? "var(--accent)" : "var(--bg4)",
+                    color: hlsUrl.trim() ? "#000" : "var(--muted)",
+                    fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:".95rem", letterSpacing:3,
+                    textTransform:"uppercase", clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)" }}>
+                  Play
+                </button>
+              ) : (
+                <button onClick={stopWatching}
+                  style={{ padding:"8px 20px", background:"var(--bg4)", color:"var(--red)",
+                    border:"1px solid var(--red)", fontFamily:"'Barlow Condensed',sans-serif",
+                    fontWeight:700, fontSize:".95rem", letterSpacing:3, textTransform:"uppercase" }}>
+                  ⬛ Stop
+                </button>
+              )}
             </div>
-          )}
 
-          {/* Push status bar */}
-          {pushStatus && (
-            <div style={{ marginBottom:12,padding:"8px 12px",background:"rgba(255,60,95,.07)",border:"1px solid rgba(255,60,95,.25)",display:"flex",alignItems:"center",gap:10,fontSize:".78rem",color:"var(--red)",fontFamily:"'Share Tech Mono',monospace" }}>
-              {(recording || pushing) && <Spinner size={14} color="var(--red)"/>}
-              {pushStatus}
-            </div>
-          )}
-
-          {/* Control buttons */}
-          <div style={{ display:"flex",gap:8,flexWrap:"wrap" }}>
-            {!stream ? (
-              /* ── Not started ── */
-              <button onClick={startPreview}
-                style={{ flex:1,padding:"10px 0",background:"var(--accent)",color:"#000",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:"1rem",letterSpacing:3,textTransform:"uppercase",clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)",transition:"all .2s" }}>
-                ▶ Start Preview
-              </button>
-            ) : !recording ? (
-              /* ── Preview active, not recording ── */
-              <>
-                <button onClick={() => { startRecording(); startRtmpPush(); }}
-                  style={{ flex:2,padding:"10px 0",background:"var(--red)",color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:"1rem",letterSpacing:3,textTransform:"uppercase",clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)" }}>
-                  🔴 Go Live + Record
+            {/* API Streams list */}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                <Tag label="Available Streams"/>
+                <button onClick={fetchStreams} disabled={loadingStreams}
+                  style={{ display:"flex", alignItems:"center", gap:5, color:"var(--accent)", fontSize:".7rem",
+                    fontFamily:"'Share Tech Mono',monospace", background:"none", border:"1px solid var(--border)", padding:"2px 8px" }}>
+                  {loadingStreams ? <Spinner size={12}/> : "⟳"} Refresh
                 </button>
-                <button onClick={startRecording}
-                  style={{ flex:1,padding:"10px 0",background:"var(--bg3)",color:"var(--green)",border:"1px solid var(--green)",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".85rem",letterSpacing:2,textTransform:"uppercase" }}>
-                  ⏺ Record Only
-                </button>
-                <button onClick={stopPreview}
-                  style={{ padding:"10px 14px",border:"1px solid var(--border)",color:"var(--muted)",fontSize:".8rem",letterSpacing:1 }}>
-                  ✕ Stop
-                </button>
-              </>
-            ) : (
-              /* ── Recording in progress ── */
-              <>
-                <button onClick={stopRecording}
-                  style={{ flex:1,padding:"10px 0",background:"var(--bg4)",color:"var(--red)",border:"1px solid var(--red)",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:"1rem",letterSpacing:3,textTransform:"uppercase" }}>
-                  ⬛ Stop Recording
-                </button>
-                <button onClick={stopPreview}
-                  style={{ padding:"10px 14px",border:"1px solid var(--border)",color:"var(--muted)",fontSize:".8rem",letterSpacing:1 }}>
-                  End Session
-                </button>
-              </>
-            )}
-          </div>
-        </Panel>
-
-        {/* Recorded clip playback + upload */}
-        {blobUrl && (
-          <Panel title="Recorded Clip" accent="var(--green)"
-            badge={<Pill color="var(--green)">READY · {fmt(recSize)}</Pill>}>
-            <video controls src={blobUrl} style={{ width:"100%",background:"#000",maxHeight:260,display:"block",marginBottom:12 }}/>
-            <div style={{ display:"flex",gap:10,alignItems:"center",flexWrap:"wrap" }}>
-              <a href={blobUrl} download="live-session.webm"
-                style={{ display:"flex",alignItems:"center",gap:6,color:"var(--accent)",fontSize:".8rem",textDecoration:"none",fontFamily:"'Share Tech Mono',monospace" }}>
-                ↓ Save WebM
-              </a>
-              <button onClick={uploadRecording} disabled={uploading}
-                style={{ marginLeft:"auto",padding:"7px 20px",background: uploading?"var(--bg4)":"var(--accent)",color: uploading?"var(--muted)":"#000",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".9rem",letterSpacing:2,clipPath:"polygon(6px 0%,100% 0%,calc(100% - 6px) 100%,0% 100%)" }}>
-                {uploading ? <Spinner size={14} color="var(--muted)"/> : "⬆ Upload & Process with Overlay"}
-              </button>
-            </div>
-            {uploadRes && (
-              <div style={{ marginTop:10,padding:"8px 12px",background:"var(--bg3)",border:"1px solid var(--border)",fontSize:".75rem",fontFamily:"'Share Tech Mono',monospace",color: uploadRes.error ? "var(--red)" : "var(--green)" }}>
-                {uploadRes.error ? "✗ " + uploadRes.error : `✓ Queued · video_id: ${uploadRes.video_id} · task_id: ${uploadRes.task_id}`}
               </div>
-            )}
+              {apiStreams.length === 0 ? (
+                <div style={{ padding:"10px 12px", background:"var(--bg3)", border:"1px solid var(--border)",
+                  color:"var(--muted)", fontSize:".75rem", fontFamily:"'Share Tech Mono',monospace", textAlign:"center" }}>
+                  No active streams found · Enter a URL above or refresh
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {apiStreams.map((s, i) => (
+                    <div key={i} onClick={() => { setHlsUrl(s.hls_url || s.url || ""); }}
+                      style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                        padding:"8px 12px", background:"var(--bg3)", border:"1px solid var(--border)",
+                        cursor:"pointer", transition:"border-color .15s" }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = "var(--accent)"}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = "var(--border)"}
+                    >
+                      <div>
+                        <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:600, color:"var(--white)", fontSize:".9rem" }}>
+                          {s.title || s.name || s.stream_id || `Stream ${i+1}`}
+                        </div>
+                        <div style={{ fontFamily:"'Share Tech Mono',monospace", color:"var(--muted)", fontSize:".68rem", marginTop:2 }}>
+                          {s.hls_url || s.url || "—"}
+                        </div>
+                      </div>
+                      <Pill color={s.status === "live" ? "var(--red)" : "var(--muted)"}>{s.status || "—"}</Pill>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Video Player */}
+            <div style={{ position:"relative" }}>
+              {activeHls ? (
+                <>
+                  <Tag label="HLS Playback"/>
+                  <HLSPlayer src={activeHls} style={{ marginTop:8, aspectRatio:"16/9", border:"1px solid var(--border)" }}/>
+                </>
+              ) : (
+                <div style={{ aspectRatio:"16/9", background:"var(--bg3)", border:"1px solid var(--border)",
+                  display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 }}>
+                  <div style={{ fontSize:"2.5rem", opacity:.4 }}>📺</div>
+                  <span style={{ color:"var(--muted)", fontSize:".8rem", fontFamily:"'Share Tech Mono',monospace" }}>
+                    Enter an HLS URL to start playback
+                  </span>
+                </div>
+              )}
+            </div>
           </Panel>
         )}
 
-        {/* Active Streams Monitor */}
-        <Panel title="Active RTMP Streams" accent="var(--amber)"
-          badge={
-            pollActive
-              ? <Pill color="var(--green)"><LiveDot color="var(--green)"/>POLLING</Pill>
-              : <Pill color="var(--muted)">IDLE</Pill>
-          }>
-          <div style={{ display:"flex",gap:8,marginBottom:12 }}>
-            <button onClick={pollActive ? stopActivePoll : startActivePoll}
-              style={{ padding:"6px 18px",background: pollActive?"var(--bg4)":"var(--amber)",color: pollActive?"var(--amber)":"#000",border:`1px solid ${pollActive?"var(--amber)":"transparent"}`,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".85rem",letterSpacing:2,textTransform:"uppercase" }}>
-              {pollActive ? "⬛ Stop Polling" : "▶ Poll nginx-rtmp"}
-            </button>
-          </div>
-          {activeStreams.length === 0 ? (
-            <div style={{ padding:"14px 0",textAlign:"center",color:"var(--muted)",fontFamily:"'Share Tech Mono',monospace",fontSize:".75rem" }}>
-              {pollActive ? "No active streams detected…" : "Start polling to monitor live streams"}
-            </div>
-          ) : activeStreams.map(s => (
-            <div key={s.stream_key} style={{ padding:"10px 12px",background:"var(--bg3)",border:"1px solid var(--border)",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8 }}>
-              <div style={{ display:"flex",alignItems:"center",gap:8 }}>
-                <LiveDot color="var(--red)"/>
-                <span style={{ fontFamily:"'Share Tech Mono',monospace",fontSize:".72rem",color:"var(--accent)" }}>{s.stream_key.slice(0,12)}…</span>
-              </div>
-              <div style={{ display:"flex",gap:12 }}>
-                <span style={{ fontFamily:"'Share Tech Mono',monospace",fontSize:".68rem",color:"var(--muted)" }}>👁 {s.viewers}</span>
-                <span style={{ fontFamily:"'Share Tech Mono',monospace",fontSize:".68rem",color:"var(--muted)" }}>📡 {s.bw_kbps} kbps</span>
-                <CopyButton text={s.hls_url}/>
-              </div>
-            </div>
-          ))}
-        </Panel>
-      </div>
+        {/* PUSH MODE */}
+        {mode === "push" && (
+          <Panel title="RTMP Push / HLS Output" accent="var(--red)"
+            badge={<StreamStatusBadge status={streamStatus}/>}>
 
-      {/* ── RIGHT COLUMN ────────────────────────────────────────────────────── */}
-      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-
-        {/* RTMP Connection Info */}
-        <Panel title="RTMP Stream Key" accent="var(--accent)"
-          badge={streamInfo ? <Pill color="var(--green)">KEY READY</Pill> : null}>
-          {!streamInfo ? (
-            <button onClick={fetchKey} disabled={keyLoading}
-              style={{ width:"100%",padding:"9px 0",background:"var(--accent)",color:"#000",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:"1rem",letterSpacing:3,textTransform:"uppercase",clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)" }}>
-              {keyLoading ? <Spinner size={16} color="#000"/> : "Generate Stream Key"}
-            </button>
-          ) : (
-            <div>
-              <KeyRow label="STREAM KEY" value={streamInfo.stream_key}/>
-              <KeyRow label="RTMP URL"   value={streamInfo.rtmp_url}/>
-              <KeyRow label="HLS URL"    value={streamInfo.hls_url}/>
-
-              <div style={{ marginTop:10,padding:"8px 10px",background:"var(--bg3)",border:"1px solid var(--border)",borderLeft:"2px solid var(--accent)" }}>
-                <Tag label="OBS Settings"/>
-                <div style={{ marginTop:6,fontFamily:"'Share Tech Mono',monospace",fontSize:".65rem",color:"var(--muted)",lineHeight:1.8 }}>
-                  Service: Custom<br/>
-                  Server: <span style={{ color:"var(--accent)" }}>rtmp://localhost:1935/live</span><br/>
-                  Stream Key: <span style={{ color:"var(--amber)" }}>{streamInfo.stream_key.slice(0,14)}…</span>
-                </div>
-              </div>
-
-              <div style={{ marginTop:8,padding:"8px 10px",background:"var(--bg3)",border:"1px solid var(--border)",borderLeft:"2px solid var(--amber)" }}>
-                <Tag label="FFmpeg CLI"/>
-                <div style={{ marginTop:6,fontFamily:"'Share Tech Mono',monospace",fontSize:".6rem",color:"var(--muted)",lineHeight:1.8,wordBreak:"break-all" }}>
-                  ffmpeg -re -i input.mp4 -c copy -f flv<br/>
-                  <span style={{ color:"var(--amber)" }}>rtmp://localhost:1935/live/{streamInfo.stream_key}</span>
-                </div>
-              </div>
-
-              <button onClick={fetchKey} style={{ marginTop:10,width:"100%",padding:"6px 0",background:"var(--bg3)",color:"var(--muted)",border:"1px solid var(--border)",fontFamily:"'Share Tech Mono',monospace",fontSize:".7rem",letterSpacing:1 }}>
-                ↺ Regenerate Key
-              </button>
-            </div>
-          )}
-        </Panel>
-
-        {/* HLS Player */}
-        {streamInfo && (
-          <Panel title="HLS Preview" accent="var(--red)"
-            badge={<Pill color="var(--red)">LIVE PLAYBACK</Pill>}>
-            <p style={{ fontSize:".72rem",color:"var(--muted)",marginBottom:10,lineHeight:1.6 }}>
-              Paste your HLS URL into a player like VLC or hls.js to preview the live stream output from nginx-rtmp.
-            </p>
-            <div style={{ padding:"8px 10px",background:"var(--bg3)",border:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:6 }}>
-              <Tag label="M3U8 Endpoint"/>
-              <span style={{ fontFamily:"'Share Tech Mono',monospace",fontSize:".65rem",color:"var(--accent)",wordBreak:"break-all" }}>{streamInfo.hls_url}</span>
-              <CopyButton text={streamInfo.hls_url}/>
-            </div>
-            <div style={{ marginTop:10,padding:"8px 10px",background:"rgba(255,60,95,.06)",border:"1px solid rgba(255,60,95,.2)" }}>
-              <Tag label="Tip" color="var(--red)"/>
-              <p style={{ fontSize:".7rem",color:"var(--muted)",marginTop:4,lineHeight:1.6 }}>
-                Stream must be live on nginx-rtmp before HLS segments are available. 15–20s latency is normal for HLS.
+            <div style={{ padding:"10px 14px", background:"rgba(255,180,0,.06)", border:"1px solid rgba(255,180,0,.2)", marginBottom:14 }}>
+              <p style={{ fontSize:".75rem", color:"var(--amber)", lineHeight:1.6 }}>
+                Register an RTMP push endpoint. Your encoder (OBS, FFmpeg, etc.) pushes to the RTMP URL. The server transcodes to HLS for viewers.
               </p>
             </div>
+
+            {/* RTMP Server URL */}
+            <div style={{ marginBottom:12 }}>
+              <label style={{ display:"block", fontSize:".65rem", fontFamily:"'Share Tech Mono',monospace",
+                color:"var(--muted)", letterSpacing:1, marginBottom:4, textTransform:"uppercase" }}>RTMP Server URL</label>
+              <input value={serverUrl} onChange={e => setServerUrl(e.target.value)} disabled={isLive}
+                style={{ width:"100%", background:"var(--bg3)", border:"1px solid var(--border)", color:"var(--text)",
+                  padding:"7px 10px", fontSize:".8rem", fontFamily:"'Share Tech Mono',monospace" }}
+                onFocus={e => e.target.style.borderColor = "var(--red)"}
+                onBlur={e => e.target.style.borderColor = "var(--border)"}
+              />
+            </div>
+
+            {/* Overlay fields */}
+            {[
+              { key:"channel_name", label:"Channel Name", ph:"NEWS 24" },
+              { key:"headline",     label:"Headline",     ph:"BREAKING NEWS" },
+              { key:"badge_text",   label:"Badge",        ph:"LIVE" },
+              { key:"ticker",       label:"Ticker",       ph:"Live stream…" },
+            ].map(f => (
+              <div key={f.key} style={{ marginBottom:10 }}>
+                <label style={{ display:"block", fontSize:".65rem", fontFamily:"'Share Tech Mono',monospace",
+                  color:"var(--muted)", letterSpacing:1, marginBottom:4, textTransform:"uppercase" }}>{f.label}</label>
+                <input value={overlay[f.key]||""} onChange={e => setOverlay(p=>({...p,[f.key]:e.target.value}))}
+                  placeholder={f.ph} disabled={isLive}
+                  style={{ width:"100%", background:"var(--bg3)", border:"1px solid var(--border)", color:"var(--text)",
+                    padding:"6px 10px", fontSize:".8rem" }}
+                  onFocus={e => e.target.style.borderColor = "var(--red)"}
+                  onBlur={e => e.target.style.borderColor = "var(--border)"}
+                />
+              </div>
+            ))}
+
+            {/* Action */}
+            <div style={{ display:"flex", gap:8, marginTop:4 }}>
+              {!streamKey ? (
+                <button onClick={createPushStream} disabled={pushActive}
+                  style={{ flex:1, padding:"10px 0", background: pushActive ? "var(--bg4)" : "var(--red)",
+                    color: pushActive ? "var(--muted)" : "#fff",
+                    fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:"1rem", letterSpacing:3,
+                    textTransform:"uppercase", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                    clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)" }}>
+                  {pushActive ? <><Spinner size={16} color="#fff"/> Registering…</> : "📡 Create Push Stream"}
+                </button>
+              ) : (
+                <button onClick={endStream}
+                  style={{ flex:1, padding:"10px 0", background:"var(--bg4)", color:"var(--red)",
+                    border:"1px solid var(--red)", fontFamily:"'Barlow Condensed',sans-serif",
+                    fontWeight:700, fontSize:"1rem", letterSpacing:3, textTransform:"uppercase" }}>
+                  ⬛ End Stream
+                </button>
+              )}
+            </div>
+
+            {/* Stream key display */}
+            {streamKey && (
+              <div style={{ marginTop:14, animation:"slide-up .25s ease" }}>
+                <Tag label="STREAM KEY — keep secret"/>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:6,
+                  background:"var(--bg3)", border:"1px solid var(--amber)", padding:"8px 12px" }}>
+                  <span style={{ flex:1, fontFamily:"'Share Tech Mono',monospace", fontSize:".8rem",
+                    color:"var(--amber)", letterSpacing:2, wordBreak:"break-all" }}>{streamKey}</span>
+                  <CopyButton text={streamKey}/>
+                </div>
+                <div style={{ marginTop:8 }}>
+                  <Tag label="RTMP Ingest URL"/>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:6,
+                    background:"var(--bg3)", border:"1px solid var(--border)", padding:"8px 12px" }}>
+                    <span style={{ flex:1, fontFamily:"'Share Tech Mono',monospace", fontSize:".75rem",
+                      color:"var(--text)", wordBreak:"break-all" }}>{serverUrl}/{streamKey}</span>
+                    <CopyButton text={`${serverUrl}/${streamKey}`}/>
+                  </div>
+                </div>
+                {/* OBS setup hint */}
+                <div style={{ marginTop:10, padding:"8px 12px", background:"rgba(0,212,255,.04)",
+                  border:"1px solid rgba(0,212,255,.15)", fontSize:".72rem", color:"var(--muted)", lineHeight:1.7 }}>
+                  <span style={{ color:"var(--accent)", fontFamily:"'Share Tech Mono',monospace" }}>OBS SETUP</span><br/>
+                  Settings → Stream → Service: Custom · Server: <span style={{ color:"var(--text)" }}>{serverUrl}</span> · Stream Key: <span style={{ color:"var(--amber)" }}>{streamKey}</span>
+                </div>
+              </div>
+            )}
+
+            {/* HLS playback for push stream */}
+            {activeHls && (
+              <div style={{ marginTop:14 }}>
+                <Tag label="HLS PLAYBACK PREVIEW"/>
+                <HLSPlayer src={activeHls} style={{ marginTop:8, aspectRatio:"16/9", border:"1px solid var(--border)" }}/>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:6 }}>
+                  <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".7rem", color:"var(--muted)", flex:1, wordBreak:"break-all" }}>{activeHls}</span>
+                  <CopyButton text={activeHls}/>
+                </div>
+              </div>
+            )}
           </Panel>
         )}
+      </div>
 
-        {/* Overlay Config */}
-        <Panel title="Overlay Config" accent="var(--amber)"
-          badge={<Pill color="var(--amber)">APPLIED ON UPLOAD</Pill>}>
-          <p style={{ fontSize:".72rem",color:"var(--muted)",marginBottom:12,lineHeight:1.6 }}>
-            Applied to the recorded clip when uploaded for FFmpeg processing.
+      {/* ── RIGHT COLUMN ── */}
+      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+
+        {/* Metrics */}
+        <Panel title="Stream Metrics" accent="var(--green)"
+          badge={isLive ? <Pill color="var(--red)"><LiveDot/>LIVE</Pill> : null}>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:8 }}>
+            <MetricTile label="UPTIME"   value={fmtUptime(metrics.uptime)} accent="var(--green)"/>
+            <MetricTile label="VIEWERS"  value={metrics.viewers}           accent="var(--accent)"/>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <MetricTile label="SEGMENTS" value={metrics.segments} accent="var(--amber)"/>
+            <MetricTile label="ERRORS"   value={metrics.errors}  accent={metrics.errors > 0 ? "var(--red)" : "var(--muted)"}/>
+          </div>
+        </Panel>
+
+        {/* Quick-create via API */}
+        <Panel title="Create Stream (API)" accent="var(--amber)"
+          badge={<Pill color="var(--amber)">POST /streams/create</Pill>}>
+          <p style={{ fontSize:".72rem", color:"var(--muted)", marginBottom:12, lineHeight:1.6 }}>
+            Creates a managed HLS stream on the backend with your news overlay baked in.
           </p>
           {[
-            { key:"channel_name", label:"Channel",  ph:"NEWS 24"              },
-            { key:"headline",     label:"Headline", ph:"BREAKING NEWS"         },
-            { key:"badge_text",   label:"Badge",    ph:"LIVE"                  },
-            { key:"ticker",       label:"Ticker",   ph:"Live broadcast in progress…" },
+            { key:"channel_name", label:"Channel",  ph:"NEWS 24"        },
+            { key:"headline",     label:"Headline", ph:"BREAKING NEWS"  },
+            { key:"badge_text",   label:"Badge",    ph:"LIVE"           },
+            { key:"ticker",       label:"Ticker",   ph:"Live now…"      },
           ].map(f => (
-            <div key={f.key} style={{ marginBottom:10 }}>
-              <label style={{ display:"block",fontSize:".65rem",fontFamily:"'Share Tech Mono',monospace",color:"var(--muted)",letterSpacing:1,marginBottom:4,textTransform:"uppercase" }}>{f.label}</label>
-              <input value={meta[f.key]||""} onChange={e=>setMeta(p=>({...p,[f.key]:e.target.value}))} placeholder={f.ph}
-                style={{ width:"100%",background:"var(--bg3)",border:"1px solid var(--border)",color:"var(--text)",padding:"6px 10px",fontSize:".8rem",fontFamily:"'Barlow',sans-serif",transition:"border-color .2s" }}
-                onFocus={e=>e.target.style.borderColor="var(--amber)"}
-                onBlur={e=>e.target.style.borderColor="var(--border)"}
+            <div key={f.key} style={{ marginBottom:8 }}>
+              <label style={{ display:"block", fontSize:".62rem", fontFamily:"'Share Tech Mono',monospace",
+                color:"var(--muted)", letterSpacing:1, marginBottom:3, textTransform:"uppercase" }}>{f.label}</label>
+              <input value={overlay[f.key]||""} onChange={e => setOverlay(p=>({...p,[f.key]:e.target.value}))}
+                placeholder={f.ph} disabled={isLive}
+                style={{ width:"100%", background:"var(--bg3)", border:"1px solid var(--border)", color:"var(--text)",
+                  padding:"5px 8px", fontSize:".78rem" }}
+                onFocus={e => e.target.style.borderColor = "var(--amber)"}
+                onBlur={e => e.target.style.borderColor = "var(--border)"}
               />
             </div>
           ))}
+          <div style={{ display:"flex", gap:8, marginTop:4 }}>
+            {!isLive && !isConnecting ? (
+              <button onClick={createStream}
+                style={{ flex:1, padding:"9px 0", background:"var(--amber)", color:"#000",
+                  fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:".9rem",
+                  letterSpacing:3, textTransform:"uppercase",
+                  clipPath:"polygon(8px 0%,100% 0%,calc(100% - 8px) 100%,0% 100%)" }}>
+                ▶ Start Stream
+              </button>
+            ) : isConnecting ? (
+              <button disabled style={{ flex:1, padding:"9px 0", background:"var(--bg4)", color:"var(--muted)",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:".9rem", letterSpacing:3 }}>
+                <Spinner size={15} color="var(--amber)"/> Connecting…
+              </button>
+            ) : (
+              <button onClick={endStream}
+                style={{ flex:1, padding:"9px 0", background:"var(--bg4)", color:"var(--red)",
+                  border:"1px solid var(--red)", fontFamily:"'Barlow Condensed',sans-serif",
+                  fontWeight:700, fontSize:".9rem", letterSpacing:3, textTransform:"uppercase" }}>
+                ⬛ End Stream
+              </button>
+            )}
+          </div>
 
-          {/* Mini overlay preview */}
-          <div style={{ position:"relative",background:"#111",aspectRatio:"16/9",overflow:"hidden",border:"1px solid var(--border)",marginTop:4 }}>
-            <div style={{ position:"absolute",top:6,left:6,background:"var(--red)",color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:".58rem",padding:"1px 6px",letterSpacing:2 }}>
-              {meta.badge_text||"LIVE"}
-            </div>
-            <div style={{ position:"absolute",top:6,right:6,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".6rem",letterSpacing:2 }}>
-              {meta.channel_name||"NEWS 24"}
-            </div>
-            <div style={{ position:"absolute",bottom:16,left:0,right:0,background:"rgba(0,0,0,.85)",padding:"3px 8px" }}>
-              <span style={{ color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:".7rem",letterSpacing:1 }}>{meta.headline||"HEADLINE"}</span>
-            </div>
-            <div style={{ position:"absolute",bottom:0,left:0,right:0,background:"var(--red)",height:16,overflow:"hidden" }}>
-              <div style={{ animation:"ticker 10s linear infinite",whiteSpace:"nowrap",display:"flex",alignItems:"center",height:"100%" }}>
-                <span style={{ color:"#fff",fontFamily:"'Share Tech Mono',monospace",fontSize:".55rem",paddingLeft:"100%" }}>{meta.ticker||"Ticker…"}</span>
+          {/* HLS URL output */}
+          {streamInfo && (streamInfo.hls_url || streamInfo.playback_url) && (
+            <div style={{ marginTop:12, animation:"slide-up .2s ease" }}>
+              <Tag label="HLS PLAYBACK URL"/>
+              <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:5,
+                background:"var(--bg3)", border:"1px solid var(--green)", padding:"7px 10px" }}>
+                <span style={{ flex:1, fontFamily:"'Share Tech Mono',monospace", fontSize:".72rem",
+                  color:"var(--green)", wordBreak:"break-all" }}>
+                  {streamInfo.hls_url || streamInfo.playback_url}
+                </span>
+                <CopyButton text={streamInfo.hls_url || streamInfo.playback_url}/>
               </div>
             </div>
-            <div style={{ position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center" }}>
-              <span style={{ color:"var(--muted)",fontSize:".6rem",fontFamily:"'Share Tech Mono',monospace" }}>PREVIEW</span>
-            </div>
+          )}
+        </Panel>
+
+        {/* Event Log */}
+        <Panel title="Event Log" accent="var(--muted)"
+          badge={<span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".65rem", color:"var(--muted)" }}>{log.length} events</span>}>
+          <div style={{ height:180, overflowY:"auto", display:"flex", flexDirection:"column", gap:3 }}>
+            {log.length === 0 ? (
+              <span style={{ color:"var(--muted)", fontSize:".72rem", fontFamily:"'Share Tech Mono',monospace" }}>No events yet…</span>
+            ) : (
+              [...log].reverse().map((entry, i) => (
+                <div key={i} style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+                  <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".63rem", color:"var(--muted)", flexShrink:0 }}>{entry.ts}</span>
+                  <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".7rem",
+                    color: entry.type === "error" ? "var(--red)" : entry.type === "success" ? "var(--green)" : entry.type === "warn" ? "var(--amber)" : "var(--text)",
+                    lineHeight:1.4 }}>
+                    {entry.type === "error" ? "✗ " : entry.type === "success" ? "✓ " : entry.type === "warn" ? "⚠ " : "· "}
+                    {entry.msg}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </Panel>
       </div>

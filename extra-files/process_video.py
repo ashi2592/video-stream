@@ -13,13 +13,13 @@ Flow:
 import os
 import subprocess
 
-from mongo_model import (
+from utils.mongo_model import (
     VideoStatus,
     get_video_overlay,
     update_video_status,
     update_video_paths,
 )
-from news_overlay import NewsOverlayFilter, OverlayConfig, _build_ffmpeg_cmd
+from overlays.news_overlay import NewsOverlayFilter, OverlayConfig, _build_ffmpeg_cmd
 
 
 # ── Docker helpers ────────────────────────────────────────────────────────────
