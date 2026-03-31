@@ -10,11 +10,28 @@ logger = logging.getLogger(__name__)
 FFMPEG_IMAGE = os.getenv("FFMPEG_DOCKER_IMAGE", "jrottenberg/ffmpeg:latest")
 
 # Common parent directory that contains both uploads/ and outputs/
-# Both paths must be under this root for Docker volume mount to work
 MOUNT_DIR = os.path.abspath(os.path.commonpath([
     os.path.abspath(UPLOAD_DIR),
     os.path.abspath(OUTPUT_DIR),
 ]))
+
+
+def _is_file_path(arg: str) -> bool:
+    if not arg or arg.startswith("-"):
+        return False
+    if arg.startswith("["):
+        return False
+    if "=" in arg:
+        return False
+    if arg in ("copy", "aac", "libx264", "libx265", "libvpx-vp9", "libopus",
+               "fast", "medium", "slow", "yuv420p", "hls", "mp4"):
+        return False
+    if "/" in arg or os.sep in arg:
+        return True
+    if any(arg.endswith(ext) for ext in (".mp4", ".m3u8", ".ts", ".webm", ".mov", ".mkv")):
+        return True
+    return False
+
 
 def _run(args: list[str], label: str):
     mount_dir = MOUNT_DIR
@@ -50,37 +67,38 @@ def _run(args: list[str], label: str):
     logger.info(f"[{label}] Completed successfully")
 
 
-def _is_file_path(arg: str) -> bool:
-    """
-    Returns True only if the arg looks like a file path that needs remapping.
-    Excludes FFmpeg flags, filter strings, codec names, and stream specifiers.
-    """
-    if not arg or arg.startswith("-"):   # flags: -i, -c:v, -map, etc.
-        return False
-    if arg.startswith("["):              # stream specifiers: [out], [0:a]
-        return False
-    if "=" in arg:                       # filter strings, options: scale=1280:720
-        return False
-    if arg in ("copy", "aac", "libx264", "libx265", "libvpx-vp9", "libopus",
-               "fast", "medium", "slow", "yuv420p", "hls", "mp4"):
-        return False                     # known codec/format/preset names
-    # Must look like a path: contains a slash, or has a video/playlist extension
-    if "/" in arg or os.sep in arg:
-        return True
-    if any(arg.endswith(ext) for ext in (".mp4", ".m3u8", ".ts", ".webm", ".mov", ".mkv")):
-        return True
-    return False
-    
+def _generate_hls(video_id: str, mp4_path: str, hls_dir: str):
+    """Generate HLS segments + master playlist from an already-encoded MP4."""
+    os.makedirs(hls_dir, exist_ok=True)
+    hls_out = os.path.join(hls_dir, "master.m3u8")
+
+    _run([
+        "-i", mp4_path,
+        "-c", "copy",           # stream copy — no re-encode
+        "-start_number", "0",
+        "-hls_time", "6",       # 6-second segments
+        "-hls_list_size", "0",  # keep all segments in playlist
+        "-hls_segment_filename", os.path.join(hls_dir, "seg%03d.ts"),
+        "-f", "hls",
+        "-y",
+        hls_out,
+    ], label=f"{video_id}/hls")
+
+    return hls_out
 
 
 def process_video(video_id, input_path, output_dir, overlay=None):
     overlay = overlay or {}
 
-    mp4_dir = os.path.join(os.path.abspath(output_dir), "mp4")
-    os.makedirs(mp4_dir, exist_ok=True)
-
-    mp4_out    = os.path.join(mp4_dir, "output.mp4")
+    output_dir = os.path.abspath(output_dir)
     input_path = os.path.abspath(input_path)
+
+    mp4_dir = os.path.join(output_dir, "mp4")
+    hls_dir = os.path.join(output_dir, "hls")
+    os.makedirs(mp4_dir, exist_ok=True)
+    os.makedirs(hls_dir, exist_ok=True)
+
+    mp4_out = os.path.join(mp4_dir, "output.mp4")
 
     overlay_enabled = overlay.get("enabled", True)
 
@@ -105,6 +123,7 @@ def process_video(video_id, input_path, output_dir, overlay=None):
             "-vf", "scale=1280:720",
         ]
 
+    # ── Step 1: MP4 ───────────────────────────────────────────────────────────
     _run([
         *ffmpeg_args,
         "-c:v", "libx264",
@@ -118,7 +137,10 @@ def process_video(video_id, input_path, output_dir, overlay=None):
         mp4_out,
     ], label=f"{video_id}/mp4")
 
-    return {"mp4": mp4_out}
+    # ── Step 2: HLS from MP4 (stream copy — no re-encode) ─────────────────────
+    hls_out = _generate_hls(video_id, mp4_out, hls_dir)
+
+    return {"mp4": mp4_out, "hls": hls_out}
 
 
 def main():

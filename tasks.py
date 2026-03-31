@@ -94,7 +94,8 @@ def process_video_task(self, video_id: str, input_path: str):
 
         # ── Phase 4: Persist output path → MongoDB ────────────────────────────
         update_video_paths(video_id, {
-            "mp4": f"{video_id}/mp4/output.mp4"
+            "mp4": f"{video_id}/mp4/output.mp4",
+            "hls": f"{video_id}/hls/master.m3u8",
         })
 
         # ── Phase 5: Mark as READY ────────────────────────────────────────────

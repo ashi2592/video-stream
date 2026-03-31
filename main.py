@@ -6,6 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.stream_router import router as stream_router
 from routers.video_router import router as video_router
 
+from fastapi.staticfiles import StaticFiles
+from config.config import OUTPUT_DIR
+
+
 app = FastAPI(title="Video Platform API")
 
 app.add_middleware(
@@ -21,3 +25,4 @@ def health():
 
 app.include_router(stream_router)
 app.include_router(video_router)
+app.mount("/", StaticFiles(directory=OUTPUT_DIR), name="outputs")

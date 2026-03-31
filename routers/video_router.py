@@ -27,6 +27,7 @@ router = APIRouter(prefix="/video", tags=["Video Management"])
 def prepare_output_dirs(video_id: str):
     base = os.path.join(OUTPUT_DIR, video_id)
     os.makedirs(os.path.join(base, "mp4"), exist_ok=True)
+    os.makedirs(os.path.join(base, "hls"), exist_ok=True)
 
 
 @router.post("/init")
@@ -232,8 +233,9 @@ def get_video_urls(video_id: str):
 
     return {
         "video_id": video_id,
+        "status":   video.get("status"),
         "urls": {
-            "mp4": f"{MEDIA_BASE}/{paths.get('mp4')}",
-            "hls": f"{MEDIA_BASE}/{video_id}/hls/master.m3u8"
+            "mp4": f"{MEDIA_BASE}/{paths['mp4']}" if paths.get("mp4") else None,
+            "hls": f"{MEDIA_BASE}/{paths['hls']}" if paths.get("hls") else None,
         },
     }
