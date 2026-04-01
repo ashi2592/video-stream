@@ -1,29 +1,25 @@
 version: "3.9"
 
-# ── Shared network ─────────────────────────────────────────────────────────────
 networks:
   platform:
     driver: bridge
 
-# ── Named volumes ──────────────────────────────────────────────────────────────
 volumes:
   mongo_data:
   uploads:
   outputs:
-  hls_segments:     # shared between nginx-rtmp writer and FastAPI reader
+  hls_segments:
 
 services:
-
-  # ── 1. nginx-rtmp: RTMP ingest + HLS output ───────────────────────────────
+  # ── 1. Nginx RTMP ────────────────────────────────────────────────────────
   rtmp:
-    image: tiangolo/nginx-rtmp          # alpine + nginx + rtmp module
-    # Alternative: alfg/nginx-rtmp (also works, same config format)
+    image: alqutami/rtmp-hls:latest
     ports:
-      - "1935:1935"     # RTMP ingest  — OBS / FFmpeg push here
-      - "8080:8080"     # HTTP/HLS     — browser plays m3u8 from here
+      - "1935:1935"   # RTMP ingest
+      - "8080:8080"   # HTTP (HLS/DASH/API proxy)
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - hls_segments:/tmp/hls           # nginx writes segments here
+      - hls_segments:/tmp/hls
     networks: [platform]
     restart: unless-stopped
     healthcheck:
@@ -32,9 +28,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── 2. MongoDB ────────────────────────────────────────────────────────────
+  # ── 2. MongoDB ───────────────────────────────────────────────────────────
   mongo:
-    image: mongo:7
+    image: mongo:latest
     ports:
       - "27017:27017"
     volumes:
@@ -42,7 +38,7 @@ services:
     networks: [platform]
     restart: unless-stopped
 
-  # ── 3. Redis (Celery broker + result backend) ─────────────────────────────
+  # ── 3. Redis ─────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
@@ -50,7 +46,7 @@ services:
     networks: [platform]
     restart: unless-stopped
 
-  # ── 4. FastAPI app ────────────────────────────────────────────────────────
+  # ── 4. FastAPI ───────────────────────────────────────────────────────────
   api:
     build:
       context: .
@@ -58,17 +54,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      MONGO_URL:        mongodb://mongo:27017
-      REDIS_URL:        redis://redis:6379/0
-      UPLOAD_DIR:       /uploads
-      OUTPUT_DIR:       /outputs
-      HLS_BASE_URL:     http://localhost:8080/live    # used to build playback URLs
-      RTMP_BASE:        rtmp://rtmp/live              # internal Docker hostname
-      CORS_ORIGINS:     "*"
+      MONGO_URL:    mongodb://mongo:27017
+      REDIS_URL:    redis://redis:6379/0
+      UPLOAD_DIR:   /uploads
+      OUTPUT_DIR:   /outputs
+      HLS_BASE_URL: http://localhost:8080/live
+      RTMP_BASE:    rtmp://rtmp/live
+      CORS_ORIGINS: "*"
     volumes:
       - uploads:/uploads
       - outputs:/outputs
-      - /var/run/docker.sock:/var/run/docker.sock   # so FFmpeg-in-Docker works
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       mongo: { condition: service_started }
       redis: { condition: service_started }
@@ -77,16 +73,16 @@ services:
     restart: unless-stopped
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-  # ── 5. Celery worker ──────────────────────────────────────────────────────
+  # ── 5. Celery worker ─────────────────────────────────────────────────────
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
-      MONGO_URL:   mongodb://mongo:27017
-      REDIS_URL:   redis://redis:6379/0
-      UPLOAD_DIR:  /uploads
-      OUTPUT_DIR:  /outputs
+      MONGO_URL:  mongodb://mongo:27017
+      REDIS_URL:  redis://redis:6379/0
+      UPLOAD_DIR: /uploads
+      OUTPUT_DIR: /outputs
     volumes:
       - uploads:/uploads
       - outputs:/outputs
