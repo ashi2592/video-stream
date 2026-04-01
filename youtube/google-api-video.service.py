@@ -20,7 +20,7 @@ def get_authenticated_service():
         flow = InstalledAppFlow.from_client_secrets_file(
             "client_secret.json", SCOPES
         )
-        creds = flow.run_local_server(port=8080)
+        creds = flow.run_local_server(port=8081)
 
         with open("token.json", "w") as token:
             token.write(creds.to_json())
@@ -135,4 +135,4 @@ if __name__ == "__main__":
     stop_live(youtube, broadcast_id)
 
     # 🎥 Upload Example
-    upload_video(youtube, "sample.mp4")
+    upload_video(youtube, "input.mp4")
