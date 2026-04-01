@@ -16,10 +16,14 @@ from utils.mongo_model import (
     update_video_status,
     videos_collection,
     VideoStatus,
+    list_videos,
 )
 from celery.result import AsyncResult
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+
+from pydantic import BaseModel
+from typing import List, Optional
 
 router = APIRouter(prefix="/video", tags=["Video Management"])
 
@@ -39,6 +43,25 @@ def init_video():
         "message":  "Video ID created. POST metadata to /video/{id}/meta next.",
     }
 
+
+def serialize_video(video):
+    return {
+        "id": video.get("id"),
+        "title": video.get("title"),
+        "status": video.get("status"),
+        "created_at": video.get("created_at"),
+        "overlay": video.get("overlay"),
+    }
+
+@router.get("/")
+def get_all_videos():
+    videos = list_videos()
+    videos = [serialize_video(v) for v in videos]
+
+    return {
+        "count": len(videos),
+        "videos": videos
+    }
 
 # ── Step 2 ────────────────────────────────────────────────────────────────────
 
@@ -238,4 +261,32 @@ def get_video_urls(video_id: str):
             "mp4": f"{MEDIA_BASE}/{paths['mp4']}" if paths.get("mp4") else None,
             "hls": f"{MEDIA_BASE}/{paths['hls']}" if paths.get("hls") else None,
         },
+    }
+
+
+
+@router.post("/{video_id}/meta")
+def set_video_meta(video_id: str, body: VideoMetaRequest):
+    video = get_video(video_id)
+    if not video:
+        raise HTTPException(404, "Video not found.")
+
+    # overlay
+    overlay_patch = {}
+    if body.channel_name: overlay_patch["channel_name"] = body.channel_name
+    if body.headline:     overlay_patch["headline"]     = body.headline
+    if body.ticker:       overlay_patch["ticker"]       = body.ticker
+    if body.badge_text:   overlay_patch["badge_text"]   = body.badge_text
+    if body.enabled is not None: overlay_patch["enabled"] = body.enabled
+
+    if overlay_patch:
+        update_video_overlay(video_id, overlay_patch)
+
+    # ✅ SEO + metadata
+    seo_data = body.model_dump(exclude_none=True)
+    update_video_seo(video_id, seo_data)
+
+    return {
+        "video_id": video_id,
+        "message": "Metadata + SEO updated"
     }

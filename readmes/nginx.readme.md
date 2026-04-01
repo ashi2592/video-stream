@@ -1,10 +1,10 @@
-docker stop nginx-rtmp && docker rm nginx-rtmp
+docker stop rtmp-server && docker rm rtmp-server
 
 docker run -d \
   -p 1935:1935 \
   -p 8080:8080 \
   -v $(pwd)/config/nginx.conf:/etc/nginx/nginx.conf:ro \
-  --name nginx-rtmp \
+  --name rtmp-server \
   alqutami/rtmp-hls\
 
 

@@ -13,6 +13,8 @@ db     = client["video_platform"]
 
 videos_collection      = db["videos"]
 livestreams_collection = db["live_streams"]
+templates_collection = db["templates"]
+
 
 
 # ── INDEXES (run once on startup) ────────────────────────────────────────────
@@ -51,42 +53,71 @@ DEFAULT_OVERLAY = {
 
 
 # ── VIDEO OPERATIONS ─────────────────────────────────────────────────────────
+def create_video(filename, title=None, size_bytes=None, overlay=None,
+                 description=None, meta_tags=None, seo=None):
 
-def create_video(filename, title=None, size_bytes=None, overlay=None):
-    """
-    Insert a new video document.
-
-    overlay (optional dict) accepts any subset of:
-        channel_name, headline, ticker, badge_text, enabled
-    Missing keys fall back to DEFAULT_OVERLAY values.
-    Pass overlay={"enabled": False} to skip the news overlay entirely.
-
-    Returns the inserted document dict (without _id).
-    """
     merged_overlay = {**DEFAULT_OVERLAY, **(overlay or {})}
 
     video = {
         "id":         str(uuid.uuid4()),
         "filename":   filename,
         "title":      title,
+        "description": description,   # ✅ NEW
+        "meta_tags":  meta_tags or [], # ✅ NEW (list of keywords)
+
+        # ✅ SEO object
+        "seo": {
+            "meta_title":       seo.get("meta_title") if seo else title,
+            "meta_description": seo.get("meta_description") if seo else description,
+            "keywords":         seo.get("keywords") if seo else [],
+        },
+
         "status":     VideoStatus.QUEUED,
         "task_id":    None,
         "duration":   None,
         "size_bytes": size_bytes,
-        # ── news overlay config — read by the Celery worker at processing time
+
         "overlay":    merged_overlay,
+
         "paths": {
             "mp4":  None,
             "hls":  None,
             "webm": None,
         },
+
         "error_msg":  None,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
     }
+
     videos_collection.insert_one(video)
     return video
 
+
+def update_video_seo(video_id, data: dict):
+    update_data = {}
+
+    if "title" in data:
+        update_data["title"] = data["title"]
+
+    if "description" in data:
+        update_data["description"] = data["description"]
+
+    if "meta_tags" in data:
+        update_data["meta_tags"] = data["meta_tags"]
+
+    if "seo" in data:
+        for k, v in data["seo"].items():
+            update_data[f"seo.{k}"] = v
+
+    update_data["updated_at"] = datetime.utcnow()
+
+    return videos_collection.find_one_and_update(
+        {"id": video_id},
+        {"$set": update_data},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
 
 def get_video(video_id):
     return videos_collection.find_one({"id": video_id}, {"_id": 0})
