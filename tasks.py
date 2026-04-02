@@ -18,12 +18,11 @@ from utils.mongo_model import (
     videos_collection,
     VideoStatus,
 )
+from utils.azure_storage import upload_folder_to_blob, generate_sas_url   # ← Azure
 from datetime import datetime
 from config.config import UPLOAD_DIR, OUTPUT_DIR, MEDIA_BASE, REDIS_URL
 
 logger = logging.getLogger(__name__)
-
-# ── Celery app ────────────────────────────────────────────────────────────────
 
 celery = Celery("tasks", broker=REDIS_URL, backend=REDIS_URL)
 
@@ -32,10 +31,9 @@ celery.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
-    worker_prefetch_multiplier=1,   # one heavy FFmpeg job at a time
+    worker_prefetch_multiplier=1,
 )
 
-# ── Task ──────────────────────────────────────────────────────────────────────
 
 @celery.task(bind=True, max_retries=2)
 def process_video_task(self, video_id: str, input_path: str):
@@ -46,21 +44,18 @@ def process_video_task(self, video_id: str, input_path: str):
         0. Save Celery task_id to MongoDB.
         1. Read overlay config from MongoDB.
         2. Mark video as PROCESSING.
-        3. Run FFmpeg → produces MP4.
-        4. Write output path back to MongoDB.
-        5. Mark video as READY.
-        6. Delete the uploaded source file.
-
-    Returns:
-        {"status": "done", "video_id": str, "paths": {"mp4": str}}
+        3. Run FFmpeg → produces MP4 + HLS.
+        4. Upload output folder to Azure Blob Storage.
+        5. Write Azure URLs back to MongoDB.
+        6. Mark video as READY.
+        7. Delete local output files + source upload.
     """
     output_dir = os.path.join(OUTPUT_DIR, video_id)
     os.makedirs(output_dir, exist_ok=True)
-
     os.makedirs(os.path.join(output_dir, "mp4"), exist_ok=True)
 
     try:
-        # ── Phase 0: Save task_id to MongoDB ─────────────────────────────────
+        # ── Phase 0: Save task_id ─────────────────────────────────────────────
         task_id = self.request.id
         videos_collection.update_one(
             {"id": video_id},
@@ -68,7 +63,7 @@ def process_video_task(self, video_id: str, input_path: str):
         )
         logger.info(f"[{video_id}] task_id saved → {task_id}")
 
-        # ── Phase 1: Read overlay config from MongoDB ─────────────────────────
+        # ── Phase 1: Read overlay config ──────────────────────────────────────
         overlay = get_video_overlay(video_id) or {}
         logger.info(
             f"[{video_id}] overlay — "
@@ -86,66 +81,69 @@ def process_video_task(self, video_id: str, input_path: str):
 
         # ── Phase 3: Run FFmpeg ───────────────────────────────────────────────
         paths = process_video(
-            video_id   = video_id,
-            input_path = input_path,
-            output_dir = output_dir,
-            overlay    = overlay,
+            video_id=video_id,
+            input_path=input_path,
+            output_dir=output_dir,
+            overlay=overlay,
         )
 
-        # ── Phase 4: Persist output path → MongoDB ────────────────────────────
+        # ── Phase 4: Upload output folder → Azure Blob ────────────────────────
+        self.update_state(
+            state="UPLOADING",
+            meta={"step": "uploading_to_azure", "video_id": video_id},
+        )
+        logger.info(f"[{video_id}] uploading output folder to Azure...")
+        upload_folder_to_blob(
+            local_dir=output_dir,
+            blob_prefix=video_id,       # blobs land at  <video_id>/mp4/... and <video_id>/hls/...
+        )
+        logger.info(f"[{video_id}] Azure upload complete")
+
+        # ── Phase 5: Build playback URLs and persist to MongoDB ───────────────
+        mp4_blob = f"{video_id}/mp4/output.mp4"
+        hls_blob = f"{video_id}/hls/master.m3u8"
+
         update_video_paths(video_id, {
-            "mp4": f"{video_id}/mp4/output.mp4",
-            "hls": f"{video_id}/hls/master.m3u8",
+            "mp4": mp4_blob,
+            "hls": hls_blob,
         })
 
-        # ── Phase 5: Mark as READY ────────────────────────────────────────────
+        # Store fully-resolved playback URLs too (CDN or SAS)
+        videos_collection.update_one(
+            {"id": video_id},
+            {"$set": {
+                "urls": {
+                    "mp4": generate_sas_url(mp4_blob),
+                    "hls": generate_sas_url(hls_blob),
+                },
+                "updated_at": datetime.utcnow(),
+            }},
+        )
+
+        # ── Phase 6: Mark as READY ────────────────────────────────────────────
         update_video_status(video_id, VideoStatus.READY)
         logger.info(f"[{video_id}] complete — {paths}")
 
-        # ── Phase 6: Delete source file ───────────────────────────────────────
+        # ── Phase 7: Clean up local files ─────────────────────────────────────
         if os.path.exists(input_path):
             os.remove(input_path)
             logger.info(f"[{video_id}] source deleted: {input_path}")
 
-        return {"status": "done", "video_id": video_id, "paths": paths}
+        import shutil
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+            logger.info(f"[{video_id}] local output dir cleaned: {output_dir}")
+
+        return {
+            "status":   "done",
+            "video_id": video_id,
+            "urls": {
+                "mp4": generate_sas_url(mp4_blob),
+                "hls": generate_sas_url(hls_blob),
+            },
+        }
 
     except Exception as exc:
         logger.exception(f"[{video_id}] failed: {exc}")
         update_video_status(video_id, VideoStatus.FAILED, str(exc))
         raise self.retry(exc=exc, countdown=60)
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Test Celery Video Processing Task")
-    parser.add_argument("--video_id", default="test123", help="Video ID")
-    parser.add_argument("--input", required=True, help="Input video path")
-
-    args = parser.parse_args()
-    input_path = os.path.abspath(args.input)
-
-    print("🚀 Sending task to Celery worker...")
-
-    try:
-        result = process_video_task.delay(
-            video_id=args.video_id,
-            input_path=input_path,
-        )
-
-                # 🔥 Call underlying function logic without Celery wrapper
-        # result = process_video(
-        #     video_id=args.video_id,
-        #     input_path=input_path,
-        #     output_dir=os.path.join(OUTPUT_DIR, args.video_id),
-        #     overlay=get_video_overlay(args.video_id) or {}
-        # )
-        
-        print(f"\n✅ Task queued:")
-        print(f"   task_id  = {result.id}")
-        print(f"   video_id = {args.video_id}")
-        print(f"\nPoll status: GET /status/{result.id}")
-
-    except Exception as e:
-        print("\n❌ Task failed:")
-        print(str(e))
