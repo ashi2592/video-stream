@@ -1,13 +1,11 @@
-
 from datetime import datetime
 from fastapi import HTTPException
 import os
-from fastapi import APIRouter, Request, UploadFile, Form
+from fastapi import APIRouter, UploadFile, Form
 from fastapi.params import File
-from config.config import UPLOAD_DIR, OUTPUT_DIR, MEDIA_BASE, REDIS_URL
-from utils.schema import VideoMetaRequest
+from config.config import UPLOAD_DIR, OUTPUT_DIR, REDIS_URL
+from utils.schema import VideoMetaRequest, OverlayUpdateRequest
 from utils.helper import _build_path, _save_upload
-from utils.schema import OverlayUpdateRequest, VideoMetaRequest
 from tasks import process_video_task, celery
 from utils.mongo_model import (
     create_video,
@@ -18,12 +16,10 @@ from utils.mongo_model import (
     VideoStatus,
     list_videos,
 )
+from utils.azure_storage import generate_sas_url
 from celery.result import AsyncResult
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-
-from pydantic import BaseModel
-from typing import List, Optional
 
 router = APIRouter(prefix="/video", tags=["Video Management"])
 
@@ -33,6 +29,18 @@ def prepare_output_dirs(video_id: str):
     os.makedirs(os.path.join(base, "mp4"), exist_ok=True)
     os.makedirs(os.path.join(base, "hls"), exist_ok=True)
 
+
+def serialize_video(video):
+    return {
+        "id":         video.get("id"),
+        "title":      video.get("title"),
+        "status":     video.get("status"),
+        "created_at": video.get("created_at"),
+        "overlay":    video.get("overlay"),
+    }
+
+
+# ── Init ──────────────────────────────────────────────────────────────────────
 
 @router.post("/init")
 def init_video():
@@ -44,33 +52,27 @@ def init_video():
     }
 
 
-def serialize_video(video):
-    return {
-        "id": video.get("id"),
-        "title": video.get("title"),
-        "status": video.get("status"),
-        "created_at": video.get("created_at"),
-        "overlay": video.get("overlay"),
-    }
+# ── List all ──────────────────────────────────────────────────────────────────
 
 @router.get("/")
 def get_all_videos():
-    videos = list_videos()
-    videos = [serialize_video(v) for v in videos]
+    videos = [serialize_video(v) for v in list_videos()]
+    return {"count": len(videos), "videos": videos}
 
-    return {
-        "count": len(videos),
-        "videos": videos
-    }
 
-# ── Step 2 ────────────────────────────────────────────────────────────────────
+# ── Meta (single, canonical definition) ──────────────────────────────────────
 
 @router.post("/{video_id}/meta")
 def set_video_meta(video_id: str, body: VideoMetaRequest):
+    """
+    Set/update overlay config, title, and any SEO fields for a video.
+    Safe to call multiple times — only supplied fields are updated.
+    """
     video = get_video(video_id)
     if not video:
         raise HTTPException(404, "Video not found. Call /video/init first.")
 
+    # ── Overlay fields ────────────────────────────────────────────────────────
     overlay_patch: dict = {}
     if body.channel_name is not None: overlay_patch["channel_name"] = body.channel_name
     if body.headline     is not None: overlay_patch["headline"]     = body.headline
@@ -80,11 +82,13 @@ def set_video_meta(video_id: str, body: VideoMetaRequest):
 
     updated = update_video_overlay(video_id, overlay_patch) if overlay_patch else video
 
-    if body.title:
-        videos_collection.update_one(
-            {"id": video_id},
-            {"$set": {"title": body.title, "updated_at": datetime.utcnow()}},
-        )
+    # ── Top-level fields ──────────────────────────────────────────────────────
+    top_level: dict = {"updated_at": datetime.utcnow()}
+    if body.title is not None:
+        top_level["title"] = body.title
+
+    if len(top_level) > 1:  # more than just updated_at
+        videos_collection.update_one({"id": video_id}, {"$set": top_level})
 
     return {
         "video_id": video_id,
@@ -93,7 +97,7 @@ def set_video_meta(video_id: str, body: VideoMetaRequest):
     }
 
 
-# ── Step 3 ────────────────────────────────────────────────────────────────────
+# ── Upload (step-by-step flow) ────────────────────────────────────────────────
 
 @router.post("/{video_id}/upload")
 async def upload_video(video_id: str, file: UploadFile = File(...)):
@@ -138,13 +142,12 @@ async def upload_video(video_id: str, file: UploadFile = File(...)):
         "task_id":    task.id,
         "status":     "queued",
         "size_bytes": size,
-        "input_path": local_path,
         "overlay":    video.get("overlay"),
         "message":    "File received and queued for processing.",
     }
 
 
-# ── One-shot ──────────────────────────────────────────────────────────────────
+# ── One-shot upload ───────────────────────────────────────────────────────────
 
 @router.post("/upload-full")
 async def upload_full_video(
@@ -159,8 +162,8 @@ async def upload_full_video(
     if not (file.content_type or "").startswith("video/"):
         raise HTTPException(400, "Only video files are accepted.")
 
-    video_doc = create_video(filename=file.filename or "upload.mp4")
-    video_id  = video_doc["id"]
+    video_doc  = create_video(filename=file.filename or "upload.mp4")
+    video_id   = video_doc["id"]
     local_path = _build_path(video_id, file.filename or "upload.mp4")
     safe_name  = os.path.basename(local_path)
     size = await _save_upload(file, local_path)
@@ -207,7 +210,6 @@ async def upload_full_video(
         "task_id":    task.id,
         "status":     "queued",
         "size_bytes": size,
-        "input_path": local_path,
         "overlay":    overlay,
         "message":    "Uploaded and processing started.",
     }
@@ -226,7 +228,7 @@ def patch_overlay(video_id: str, body: OverlayUpdateRequest):
     return {"video_id": video_id, "overlay": updated.get("overlay")}
 
 
-# ── Status / playback ─────────────────────────────────────────────────────────
+# ── Task status ───────────────────────────────────────────────────────────────
 
 @router.get("/status/{task_id}")
 def get_task_status(task_id: str):
@@ -238,6 +240,8 @@ def get_task_status(task_id: str):
     }
 
 
+# ── Single video doc ──────────────────────────────────────────────────────────
+
 @router.get("/{video_id}")
 def get_video_doc(video_id: str):
     video = get_video(video_id)
@@ -246,47 +250,38 @@ def get_video_doc(video_id: str):
     return video
 
 
+# ── Playback URLs ─────────────────────────────────────────────────────────────
+
 @router.get("/{video_id}/urls")
-def get_video_urls(video_id: str):
+def get_video_urls(video_id: str, expiry: int = 3600):
     video = get_video(video_id)
     if not video:
         raise HTTPException(404, "Video not found.")
 
-    paths = video.get("paths") or {}
+    status = video.get("status")
+
+    if status != VideoStatus.READY:
+        return {
+            "video_id": video_id,
+            "status":   status,
+            "urls":     {"hls": None, "mp4": None},
+            "message":  f"Video is {status}, URLs available once processing completes.",
+        }
+
+    mp4_blob = f"{video_id}/mp4/output.mp4"
+    hls_blob = f"{video_id}/hls/master.m3u8"
+
+    mp4_url = generate_sas_url(mp4_blob, expiry_seconds=expiry)
+    hls_url = generate_sas_url(hls_blob, expiry_seconds=expiry)
+
+    if not hls_url and not mp4_url:
+        raise HTTPException(500, "Could not generate playback URLs. Check Azure credentials.")
 
     return {
         "video_id": video_id,
-        "status":   video.get("status"),
+        "status":   status,
         "urls": {
-            "mp4": f"{MEDIA_BASE}/{paths['mp4']}" if paths.get("mp4") else None,
-            "hls": f"{MEDIA_BASE}/{paths['hls']}" if paths.get("hls") else None,
+            "hls": hls_url,
+            "mp4": mp4_url,
         },
-    }
-
-
-
-@router.post("/{video_id}/meta")
-def set_video_meta(video_id: str, body: VideoMetaRequest):
-    video = get_video(video_id)
-    if not video:
-        raise HTTPException(404, "Video not found.")
-
-    # overlay
-    overlay_patch = {}
-    if body.channel_name: overlay_patch["channel_name"] = body.channel_name
-    if body.headline:     overlay_patch["headline"]     = body.headline
-    if body.ticker:       overlay_patch["ticker"]       = body.ticker
-    if body.badge_text:   overlay_patch["badge_text"]   = body.badge_text
-    if body.enabled is not None: overlay_patch["enabled"] = body.enabled
-
-    if overlay_patch:
-        update_video_overlay(video_id, overlay_patch)
-
-    # ✅ SEO + metadata
-    seo_data = body.model_dump(exclude_none=True)
-    update_video_seo(video_id, seo_data)
-
-    return {
-        "video_id": video_id,
-        "message": "Metadata + SEO updated"
     }

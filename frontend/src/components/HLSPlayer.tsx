@@ -216,16 +216,16 @@ export default function HLSPlayer() {
       // VOD: fetch metadata from API
       (async () => {
         try {
-          const r = await fetch(`${apiBase}/video/${videoId}`);
+          const r = await fetch(`${apiBase}/video/${videoId}/urls`);
           if (!r.ok) throw new Error(`${r.status} — Video not found`);
           const d = await r.json();
           setVodMeta(d);
           if (d.status !== "ready") { setPlayerErr(`Video is not ready — status: ${d.status}`); setLoading(false); return; }
           // prefer HLS, fall back to MP4
-          const url = d.paths?.hls
-            ? `${apiBase}/${d.paths.hls}`
-            : d.paths?.mp4
-            ? `${apiBase}/${d.paths.mp4}`
+          const url = d.urls?.hls
+            ? `${d.urls.hls}`
+            : d.urls?.mp4
+            ? `${d.urls.mp4}`
             : null;
           if (!url) throw new Error("No playable URL found for this video.");
           setSrcUrl(url);
