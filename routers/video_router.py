@@ -151,22 +151,32 @@ async def upload_video(video_id: str, file: UploadFile = File(...)):
 
 @router.post("/upload-full")
 async def upload_full_video(
-    file:         UploadFile = File(...),
-    title:        str  = Form(None),
-    channel_name: str  = Form("NEWS 24"),
-    headline:     str  = Form("BREAKING NEWS"),
-    ticker:       str  = Form("Stay tuned for updates"),
-    badge_text:   str  = Form("BREAKING"),
-    enabled:      bool = Form(True),
+    file:              UploadFile = File(...),
+    user_id:           str  = Form(...),                    # required
+    title:             str  = Form(None),
+    description:       str  = Form(None),
+    short_description: str  = Form(None),
+    hashtags:          str  = Form(None),                   # comma-separated, e.g. "news,breaking,world"
+    channel_name:      str  = Form("NEWS 24"),
+    headline:          str  = Form("BREAKING NEWS"),
+    ticker:            str  = Form("Stay tuned for updates"),
+    badge_text:        str  = Form("BREAKING"),
+    enabled:           bool = Form(True),
 ):
     if not (file.content_type or "").startswith("video/"):
         raise HTTPException(400, "Only video files are accepted.")
+
+    # Parse hashtags from comma-separated string → list
+    hashtag_list: list[str] = (
+        [tag.strip().lstrip("#") for tag in hashtags.split(",") if tag.strip()]
+        if hashtags else []
+    )
 
     video_doc  = create_video(filename=file.filename or "upload.mp4")
     video_id   = video_doc["id"]
     local_path = _build_path(video_id, file.filename or "upload.mp4")
     safe_name  = os.path.basename(local_path)
-    size = await _save_upload(file, local_path)
+    size       = await _save_upload(file, local_path)
 
     if not os.path.exists(local_path):
         update_video_status(video_id, VideoStatus.FAILED, "File write verification failed")
@@ -184,12 +194,16 @@ async def upload_full_video(
     videos_collection.update_one(
         {"id": video_id},
         {"$set": {
-            "filename":   safe_name,
-            "input_path": local_path,
-            "size_bytes": size,
-            "status":     VideoStatus.QUEUED,
-            "updated_at": datetime.utcnow(),
-            **({"title": title} if title else {}),
+            "filename":          safe_name,
+            "input_path":        local_path,
+            "size_bytes":        size,
+            "status":            VideoStatus.QUEUED,
+            "updated_at":        datetime.utcnow(),
+            "user_id":           user_id,
+            "hashtags":          hashtag_list,
+            **({"title":             title}             if title             else {}),
+            **({"description":       description}       if description       else {}),
+            **({"short_description": short_description} if short_description else {}),
         }},
     )
 
@@ -206,14 +220,18 @@ async def upload_full_video(
     )
 
     return {
-        "video_id":   video_id,
-        "task_id":    task.id,
-        "status":     "queued",
-        "size_bytes": size,
-        "overlay":    overlay,
-        "message":    "Uploaded and processing started.",
+        "video_id":          video_id,
+        "task_id":           task.id,
+        "status":            "queued",
+        "size_bytes":        size,
+        "overlay":           overlay,
+        "user_id":           user_id,
+        "title":             title,
+        "description":       description,
+        "short_description": short_description,
+        "hashtags":          hashtag_list,
+        "message":           "Uploaded and processing started.",
     }
-
 
 # ── Overlay patch ─────────────────────────────────────────────────────────────
 

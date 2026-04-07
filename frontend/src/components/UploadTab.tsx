@@ -13,6 +13,7 @@ import { Icon } from '../constant/icon';
 // Type definitions
 interface MetaData {
   title: string;
+  description: string;
   channel_name: string;
   headline: string;
   ticker: string;
@@ -58,7 +59,8 @@ type UploadStatus = "uploading" | "queued" | "processing" | "ready" | "failed" |
 export const UploadTab = ({ apiBase }: UploadTabProps): JSX.Element => {
   const [file, setFile] = useState<File | null>(null);
   const [meta, setMeta] = useState<MetaData>({
-    title: "",
+    title: "First video",
+    description:"this is video descriptions",
     channel_name: "NEWS 24",
     headline: "BREAKING NEWS",
     ticker: "Stay tuned for updates",
@@ -88,6 +90,8 @@ export const UploadTab = ({ apiBase }: UploadTabProps): JSX.Element => {
     fd.append("file", file);
     Object.entries(meta).forEach(([k, v]) => v && fd.append(k, v));
     fd.append("enabled", "true");
+    fd.append("user_id", "Ashsih");
+
 
     try {
       const xhr = new XMLHttpRequest();
@@ -373,6 +377,7 @@ export const UploadTab = ({ apiBase }: UploadTabProps): JSX.Element => {
       >
         {[
           { key: "title" as const, label: "Video Title", ph: "My Broadcast" },
+           { key: "description" as const, label: "Video Descriptions", ph: "My Broadcast" },
           { key: "channel_name" as const, label: "Channel Name", ph: "NEWS 24" },
           { key: "headline" as const, label: "Headline", ph: "BREAKING NEWS" },
           { key: "badge_text" as const, label: "Badge Text", ph: "BREAKING" },
@@ -410,118 +415,6 @@ export const UploadTab = ({ apiBase }: UploadTabProps): JSX.Element => {
             />
           </div>
         ))}
-
-        {/* Live overlay preview */}
-        <div style={{ 
-          marginTop: 8, 
-          position: "relative", 
-          background: "#000", 
-          aspectRatio: "16/9", 
-          overflow: "hidden", 
-          border: "1px solid var(--border)" 
-        }}>
-          <div style={{ 
-            position: "absolute", 
-            inset: 0, 
-            background: "linear-gradient(to bottom,transparent 50%,rgba(0,0,0,.7))", 
-            pointerEvents: "none" 
-          }} />
-          
-          {/* Channel badge */}
-          <div style={{ 
-            position: "absolute", 
-            top: 10, 
-            left: 10, 
-            background: "var(--red)", 
-            color: "#fff", 
-            fontFamily: "'Barlow Condensed',sans-serif", 
-            fontWeight: 900, 
-            fontSize: ".7rem", 
-            padding: "2px 8px", 
-            letterSpacing: 2 
-          }}>
-            {meta.badge_text || "BREAKING"}
-          </div>
-          
-          {/* Channel name */}
-          <div style={{ 
-            position: "absolute", 
-            top: 10, 
-            right: 10, 
-            color: "#fff", 
-            fontFamily: "'Barlow Condensed',sans-serif", 
-            fontWeight: 700, 
-            fontSize: ".75rem", 
-            letterSpacing: 2 
-          }}>
-            {meta.channel_name || "NEWS 24"}
-          </div>
-          
-          {/* Headline bar */}
-          <div style={{ 
-            position: "absolute", 
-            bottom: 22, 
-            left: 0, 
-            right: 0, 
-            background: "rgba(0,0,0,.85)", 
-            padding: "5px 10px" 
-          }}>
-            <div style={{ 
-              color: "#fff", 
-              fontFamily: "'Barlow Condensed',sans-serif", 
-              fontWeight: 700, 
-              fontSize: ".9rem", 
-              letterSpacing: 1 
-            }}>
-              {meta.headline || "HEADLINE"}
-            </div>
-          </div>
-          
-          {/* Ticker */}
-          <div style={{ 
-            position: "absolute", 
-            bottom: 0, 
-            left: 0, 
-            right: 0, 
-            background: "var(--red)", 
-            overflow: "hidden", 
-            height: 22 
-          }}>
-            <div style={{ 
-              display: "flex", 
-              alignItems: "center", 
-              height: "100%", 
-              animation: "ticker 14s linear infinite", 
-              whiteSpace: "nowrap" 
-            }}>
-              <span style={{ 
-                color: "#fff", 
-                fontFamily: "'Share Tech Mono',monospace", 
-                fontSize: ".65rem", 
-                paddingLeft: "100%" 
-              }}>
-                {meta.ticker || "Ticker text…"}
-              </span>
-            </div>
-          </div>
-          
-          {/* Preview overlay */}
-          <div style={{ 
-            position: "absolute", 
-            inset: 0, 
-            display: "flex", 
-            alignItems: "center", 
-            justifyContent: "center" 
-          }}>
-            <span style={{ 
-              color: "var(--muted)", 
-              fontSize: ".7rem", 
-              fontFamily: "'Share Tech Mono',monospace" 
-            }}>
-              PREVIEW
-            </span>
-          </div>
-        </div>
       </Panel>
     </div>
   );

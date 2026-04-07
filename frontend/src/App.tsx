@@ -2,7 +2,6 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import LandingPage from './components/LandingPage';
 import HLSPlayer from './components/HLSPlayer'
-// Ensure these files have been converted to .tsx or have .d.ts declarations
 import VideoStream from './components/VideoStream';
 import OverlayTemplate from './components/OverlayTemplate';
 

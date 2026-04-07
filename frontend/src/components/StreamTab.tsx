@@ -61,12 +61,12 @@ interface StreamTabProps {
 }
 
 // ─── MAIN STREAM TAB ─────────────────────────────────────────────────────────
-export function StreamTab({ 
+export const StreamTab = ({ 
   apiBase = "http://localhost:8000", 
   liveBase = "http://localhost:8080", 
   rtmpPort = 1935, 
   hlsPort = 8080 
-}: StreamTabProps): JSX.Element {
+}: StreamTabProps) => {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"watch" | "push">("watch");
   const [streamStatus, setStreamStatus] = useState<"idle" | "connecting" | "live" | "ended" | "error">("idle");

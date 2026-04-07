@@ -2,8 +2,11 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const DEFAULT_API = "http://localhost:8000";
-const NGINX_API = "http://localhost:8080";
+const DEFAULT_API = import.meta.env.VITE_DEFAULT_API;
+const NGINX_API = import.meta.env.VITE_NGINX_API;
+
+console.log("Default API:", DEFAULT_API);
+console.log("Nginx API:", NGINX_API);
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&family=Share+Tech+Mono&display=swap');`;
