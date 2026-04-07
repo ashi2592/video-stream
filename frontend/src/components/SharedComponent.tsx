@@ -35,6 +35,29 @@ interface CopyButtonProps {
   compact?: boolean;
 }
 
+interface StatusChipProps {
+  status: string;
+}
+
+interface StreamStatusBadgeProps {
+  status: 'idle' | 'connecting' | 'live' | 'ended' | 'error';
+}
+
+interface MetricTileProps {
+  label: string;
+  value: string | number;
+  unit?: string;
+  accent?: string;
+}
+
+// Type for status mapping
+type StatusMap = {
+  [key: string]: {
+    color: string;
+    label: string;
+  };
+};
+
 // Panel Component
 export const Panel = ({ 
   title, 
@@ -210,46 +233,58 @@ export const CopyButton = ({ text, compact = false }: CopyButtonProps): JSX.Elem
   );
 };
 
-export const StatusChip = ({ status }: {status: string}) => {
-  const map = {
-    queued:     { color:"var(--amber)",   label:"QUEUED"     },
-    processing: { color:"var(--accent)",  label:"PROCESSING" },
-    ready:      { color:"var(--green)",   label:"READY"      },
-    failed:     { color:"var(--red)",     label:"FAILED"     },
+// StatusChip Component
+export const StatusChip = ({ status }: StatusChipProps): JSX.Element => {
+  const statusMap: StatusMap = {
+    queued:     { color: "var(--amber)",   label: "QUEUED" },
+    processing: { color: "var(--accent)",  label: "PROCESSING" },
+    ready:      { color: "var(--green)",   label: "READY" },
+    failed:     { color: "var(--red)",     label: "FAILED" },
   };
-  const s = map[status] || { color:"var(--muted)", label: status?.toUpperCase() || "—" };
-  return <Pill color={s.color}><LiveDot color={s.color}/>{s.label}</Pill>;
-}
+  
+  const s = statusMap[status] || { color: "var(--muted)", label: status?.toUpperCase() || "—" };
+  return (
+    <Pill color={s.color}>
+      <LiveDot color={s.color} />
+      {s.label}
+    </Pill>
+  );
+};
 
 // ─── STREAM STATUS BADGE ─────────────────────────────────────────────────────
-export const StreamStatusBadge = ({ status }) => {
-  const cfg = {
-    idle:       { color:"var(--muted)",   label:"OFFLINE"  },
-    connecting: { color:"var(--amber)",   label:"CONNECTING" },
-    live:       { color:"var(--red)",     label:"LIVE"     },
-    ended:      { color:"var(--muted)",   label:"ENDED"    },
-    error:      { color:"var(--red)",     label:"ERROR"    },
-  }[status] || { color:"var(--muted)", label:"—" };
+export const StreamStatusBadge = ({ status }: StreamStatusBadgeProps): JSX.Element => {
+  const statusConfig: Record<string, { color: string; label: string }> = {
+    idle:       { color: "var(--muted)",   label: "OFFLINE" },
+    connecting: { color: "var(--amber)",   label: "CONNECTING" },
+    live:       { color: "var(--red)",     label: "LIVE" },
+    ended:      { color: "var(--muted)",   label: "ENDED" },
+    error:      { color: "var(--red)",     label: "ERROR" },
+  };
+  
+  const cfg = statusConfig[status] || { color: "var(--muted)", label: "—" };
+  
   return (
     <Pill color={cfg.color}>
-      {status === "live" && <LiveDot color={cfg.color}/>}
+      {status === "live" && <LiveDot color={cfg.color} />}
       {cfg.label}
     </Pill>
   );
-}
+};
 
 // ─── METRIC TILE ─────────────────────────────────────────────────────────────
-export const MetricTile  =({ label, value, unit, accent = "var(--accent)" }) => {
+export const MetricTile = ({ label, value, unit, accent = "var(--accent)" }: MetricTileProps): JSX.Element => {
   return (
-    <div style={{ background:"var(--bg3)", border:"1px solid var(--border)", padding:"10px 14px", flex:1 }}>
-      <Tag label={label}/>
-      <div style={{ marginTop:4, display:"flex", alignItems:"baseline", gap:4 }}>
-        <span style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:"1.5rem", color: accent }}>{value}</span>
-        {unit && <span style={{ fontFamily:"'Share Tech Mono',monospace", fontSize:".65rem", color:"var(--muted)" }}>{unit}</span>}
+    <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", padding: "10px 14px", flex: 1 }}>
+      <Tag label={label} />
+      <div style={{ marginTop: 4, display: "flex", alignItems: "baseline", gap: 4 }}>
+        <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, fontSize: "1.5rem", color: accent }}>
+          {value}
+        </span>
+        {unit && <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: ".65rem", color: "var(--muted)" }}>{unit}</span>}
       </div>
     </div>
   );
-}
+};
 
 // Optional: Export all components from a single file
 export default {
